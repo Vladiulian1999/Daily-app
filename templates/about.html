@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <div class="card shadow-lg border-0">
+        <div class="card-body p-5">
+          <h3 class="mb-3">About this planner</h3>
+          <p class="text-muted">
+            Daily Planner Studio keeps planning, habits, routines, and spending in
+            one calm daily workflow. Plan the day, run the day, then review it.
+          </p>
+
+          <div class="row g-4 mt-2">
+            <div class="col-sm-6">
+              <div class="p-3 rounded-3 bg-light border">
+                <div class="text-uppercase small text-muted">Plan Items</div>
+                <div class="display-6 fw-semibold">{{ stats["plans"] }}</div>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <div class="p-3 rounded-3 bg-light border">
+                <div class="text-uppercase small text-muted">Checklist Items</div>
+                <div class="display-6 fw-semibold">{{ stats["checklist"] }}</div>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <div class="p-3 rounded-3 bg-light border">
+                <div class="text-uppercase small text-muted">Habits</div>
+                <div class="display-6 fw-semibold">{{ stats["habits"] }}</div>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <div class="p-3 rounded-3 bg-light border">
+                <div class="text-uppercase small text-muted">Routines</div>
+                <div class="display-6 fw-semibold">{{ stats["routines"] }}</div>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <div class="p-3 rounded-3 bg-light border">
+                <div class="text-uppercase small text-muted">Spend Entries</div>
+                <div class="display-6 fw-semibold">{{ stats["spending_entries"] }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <a class="btn btn-outline-primary" href="{{ url_for('index') }}">Back to Today</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

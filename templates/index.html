@@ -1,0 +1,466 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="section-title mb-4">
+    <h3 class="mb-0">Today</h3>
+    <span class="text-muted">Plan, track, and review in one place.</span>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-12 col-lg-3">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-uppercase small text-muted">Plan Pulse</div>
+          <div class="fw-semibold mt-2">Done {{ plans_done }} / {{ plans | length }}</div>
+          <div class="small text-muted">Pending {{ plans_pending }} - Missed {{ plans_missed }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-3">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-uppercase small text-muted">Checklist</div>
+          <div class="fw-semibold mt-2">Done {{ checklist_done }} / {{ checklist_total }}</div>
+          <div class="small text-muted">Quick wins build momentum.</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-3">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-uppercase small text-muted">Habits</div>
+          <div class="fw-semibold mt-2">Hit {{ habits_hit }} / {{ habit_total }}</div>
+          {% set habit_ratio = (habits_hit / habit_total * 100) if habit_total else 0 %}
+          {% set habit_ratio_capped = habit_ratio if habit_ratio < 100 else 100 %}
+          {% if habit_ratio < 70 %}
+            {% set habit_bar_class = "bg-danger" %}
+          {% elif habit_ratio < 90 %}
+            {% set habit_bar_class = "bg-warning" %}
+          {% else %}
+            {% set habit_bar_class = "bg-success" %}
+          {% endif %}
+          <div class="progress mt-2" role="progressbar" aria-label="Habits hit" aria-valuenow="{{ habit_ratio }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {{ habit_bar_class }}" style="width: {{ habit_ratio_capped }}%"></div>
+          </div>
+          <div class="small text-muted">Target met count today.</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-3">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-body">
+          <div class="text-uppercase small text-muted">Routines</div>
+          <div class="fw-semibold mt-2">Done {{ routine_items_done }} / {{ routine_items_total }}</div>
+          {% set routine_ratio = (routine_items_done / routine_items_total * 100) if routine_items_total else 0 %}
+          {% set routine_ratio_capped = routine_ratio if routine_ratio < 100 else 100 %}
+          {% if routine_ratio < 70 %}
+            {% set routine_bar_class = "bg-danger" %}
+          {% elif routine_ratio < 90 %}
+            {% set routine_bar_class = "bg-warning" %}
+          {% else %}
+            {% set routine_bar_class = "bg-success" %}
+          {% endif %}
+          <div class="progress mt-2" role="progressbar" aria-label="Routine completion" aria-valuenow="{{ routine_ratio }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {{ routine_bar_class }}" style="width: {{ routine_ratio_capped }}%"></div>
+          </div>
+          <div class="small text-muted">Step completion today.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-12 col-xl-4">
+      <div class="card shadow-lg border-0 mb-4">
+        <div class="card-body p-4">
+          <h5 class="mb-3">Daily Plan</h5>
+          <form method="post" action="{{ url_for('add_plan') }}" class="vstack gap-3">
+            <input class="form-control" name="title" placeholder="Top priority task" required>
+            <input class="form-control" name="time_block" placeholder="Time block (optional)">
+            <div class="row g-2">
+              <div class="col-6">
+                <select class="form-select" name="priority">
+                  <option value="3">Priority 3</option>
+                  <option value="2" selected>Priority 2</option>
+                  <option value="1">Priority 1</option>
+                </select>
+              </div>
+              <div class="col-6">
+                <input class="form-control" type="date" name="scheduled_date" value="{{ today_iso }}">
+              </div>
+            </div>
+            <button class="btn btn-primary w-100">Add to plan</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body p-4">
+          <h6 class="text-uppercase text-muted">Daily Checklist</h6>
+          <form method="post" action="{{ url_for('add_checklist_item') }}" class="vstack gap-2 mt-3">
+            <input class="form-control" name="label" placeholder="Small must-do" required>
+            <div class="d-flex gap-2">
+              <input class="form-control" type="date" name="scheduled_date" value="{{ today_iso }}">
+              <button class="btn btn-outline-primary">Add</button>
+            </div>
+          </form>
+          <div class="mt-3 vstack gap-2">
+            {% for item in checklist %}
+              <div class="d-flex align-items-center justify-content-between">
+                <form method="post" action="{{ url_for('toggle_checklist_item', item_id=item['id']) }}">
+                  <button class="btn btn-sm {{ 'btn-success' if item['done'] else 'btn-outline-secondary' }}">
+                    {{ "Done" if item['done'] else "Open" }}
+                  </button>
+                </form>
+                <span class="flex-grow-1 ms-2 {{ 'text-decoration-line-through text-muted' if item['done'] else '' }}">
+                  {{ item["label"] }}
+                </span>
+                <form method="post" action="{{ url_for('delete_checklist_item', item_id=item['id']) }}">
+                  <button class="btn btn-sm btn-outline-danger">Remove</button>
+                </form>
+              </div>
+            {% else %}
+              <span class="text-muted">Nothing here yet.</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0">
+        <div class="card-body p-4">
+          <h6 class="text-uppercase text-muted">Daily Spending</h6>
+          <form method="post" action="{{ url_for('add_spending') }}" class="vstack gap-2 mt-3">
+            <div class="row g-2">
+              <div class="col-5">
+                <input class="form-control" name="amount" placeholder="£12.50" required>
+              </div>
+              <div class="col-7">
+                <select class="form-select" name="category">
+                  <option>Food</option>
+                  <option>Transport</option>
+                  <option>Home</option>
+                  <option>Health</option>
+                  <option>Fun</option>
+                  <option>Other</option>
+                </select>
+              </div>
+            </div>
+            <input class="form-control" name="note" placeholder="Note (optional)">
+            <div class="d-flex gap-2">
+              <input class="form-control" type="date" name="spend_date" value="{{ today_iso }}">
+              <button class="btn btn-outline-primary">Log spend</button>
+            </div>
+          </form>
+          <div class="mt-3">
+            <div class="d-flex justify-content-between">
+              <span class="text-muted">Today total</span>
+              <span class="fw-semibold">£{{ "%.2f"|format(spend_total) }}</span>
+            </div>
+            {% if daily_spend_limit and daily_spend_limit > 0 %}
+              <div class="d-flex justify-content-between">
+                <span class="text-muted">Left today</span>
+                <span class="fw-semibold {{ 'text-danger' if left_to_spend is not none and left_to_spend < 0 else '' }}">
+                  £{{ "%.2f"|format(left_to_spend) }}
+                </span>
+              </div>
+            {% endif %}
+            <div class="d-flex justify-content-between">
+              <span class="text-muted">Week range</span>
+              <span class="small text-muted">{{ week_start }} - {{ today_iso }}</span>
+            </div>
+            <div class="mt-2 vstack gap-2">
+              {% for entry in spending_entries %}
+                <div class="d-flex align-items-center justify-content-between">
+                  <div>
+                    <div class="fw-semibold">£{{ "%.2f"|format(entry["amount"]) }}</div>
+                    <div class="small text-muted">{{ entry["category"] }} - {{ entry["note"] }}</div>
+                  </div>
+                  <form method="post" action="{{ url_for('delete_spending', entry_id=entry['id']) }}">
+                    <button class="btn btn-sm btn-outline-danger">Remove</button>
+                  </form>
+                </div>
+              {% else %}
+                <span class="text-muted">No spends logged today.</span>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="border-top pt-3 mt-4">
+            <div class="d-flex align-items-center justify-content-between">
+              <h6 class="text-uppercase text-muted mb-0">Budgets</h6>
+              <span class="small text-muted">Per category</span>
+            </div>
+            <form method="post" action="{{ url_for('update_spend_limit') }}" class="vstack gap-2 mt-3">
+              <div class="d-flex gap-2">
+                <input class="form-control" name="daily_spend_limit" placeholder="Daily limit (all categories)" value="{{ daily_spend_limit }}">
+                <button class="btn btn-outline-primary">Save daily limit</button>
+              </div>
+            </form>
+            <form method="post" action="{{ url_for('add_budget') }}" class="vstack gap-2 mt-3">
+              <input class="form-control" name="category" placeholder="Category name" required>
+              <div class="row g-2">
+                <div class="col-6">
+                  <input class="form-control" name="daily_limit" placeholder="Daily limit">
+                </div>
+                <div class="col-6">
+                  <input class="form-control" name="weekly_limit" placeholder="Weekly limit">
+                </div>
+              </div>
+              <button class="btn btn-outline-primary">Save budget</button>
+            </form>
+            <div class="mt-3 vstack gap-2">
+                {% for budget in spending_budgets %}
+                  {% set spent = spend_category_map.get(budget["category"], 0) %}
+                  {% set week_spent = spend_week_category_map.get(budget["category"], 0) %}
+                  {% set over_daily = budget["daily_limit"] > 0 and spent > budget["daily_limit"] %}
+                  {% set over_week = budget["weekly_limit"] > 0 and week_spent > budget["weekly_limit"] %}
+                <div class="d-flex align-items-center justify-content-between">
+                  <div>
+                    <div class="fw-semibold">{{ budget["category"] }}</div>
+                    <div class="small text-muted">
+                      Today: £{{ "%.2f"|format(spent) }}
+                      / £{{ "%.2f"|format(budget["daily_limit"]) }}
+                      - Week: £{{ "%.2f"|format(week_spent) }}
+                      / £{{ "%.2f"|format(budget["weekly_limit"]) }}
+                    </div>
+                    {% set daily_ratio = (spent / budget["daily_limit"] * 100) if budget["daily_limit"] else 0 %}
+                    {% set weekly_ratio = (week_spent / budget["weekly_limit"] * 100) if budget["weekly_limit"] else 0 %}
+                    {% set daily_ratio_capped = daily_ratio if daily_ratio < 100 else 100 %}
+                    {% set weekly_ratio_capped = weekly_ratio if weekly_ratio < 100 else 100 %}
+                    {% if daily_ratio < 70 %}
+                      {% set daily_bar_class = "bg-success" %}
+                    {% elif daily_ratio < 90 %}
+                      {% set daily_bar_class = "bg-warning" %}
+                    {% else %}
+                      {% set daily_bar_class = "bg-danger" %}
+                    {% endif %}
+                    {% if weekly_ratio < 70 %}
+                      {% set weekly_bar_class = "bg-success" %}
+                    {% elif weekly_ratio < 90 %}
+                      {% set weekly_bar_class = "bg-warning" %}
+                    {% else %}
+                      {% set weekly_bar_class = "bg-danger" %}
+                    {% endif %}
+                    {% if budget["daily_limit"] %}
+                      <div class="progress budget-progress mt-2" role="progressbar" aria-label="Daily budget usage" aria-valuenow="{{ daily_ratio }}" aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar {{ daily_bar_class }}" style="width: {{ daily_ratio_capped }}%"></div>
+                      </div>
+                    {% endif %}
+                    {% if budget["weekly_limit"] %}
+                      <div class="progress budget-progress mt-2" role="progressbar" aria-label="Weekly budget usage" aria-valuenow="{{ weekly_ratio }}" aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar {{ weekly_bar_class }}" style="width: {{ weekly_ratio_capped }}%"></div>
+                      </div>
+                    {% endif %}
+                    {% if over_daily or over_week %}
+                      <div class="small budget-alert">Over budget - adjust tomorrow.</div>
+                    {% elif budget["daily_limit"] > 0 or budget["weekly_limit"] > 0 %}
+                      <div class="small text-muted">On track.</div>
+                    {% endif %}
+                  </div>
+                  <form method="post" action="{{ url_for('delete_budget', budget_id=budget['id']) }}">
+                    <button class="btn btn-sm btn-outline-danger">Remove</button>
+                  </form>
+                </div>
+              {% else %}
+                <span class="text-muted">No budgets yet.</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-xl-8">
+      <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body p-4">
+          <div class="d-flex align-items-center justify-content-between">
+            <h5 class="mb-0">Plan Lineup</h5>
+            <span class="badge bg-dark text-white">Stay focused</span>
+          </div>
+          <div class="mt-3 vstack gap-3">
+            {% for plan in plans %}
+              <div class="card plan-card border-0">
+                <div class="card-body d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2">
+                  <div>
+                    <div class="fw-semibold">{{ plan["title"] }}</div>
+                    <div class="small text-muted">
+                      {{ plan["time_block"] if plan["time_block"] else "Flexible time" }}
+                      - Priority {{ plan["priority"] }}
+                    </div>
+                  </div>
+                  <div class="d-flex gap-2 flex-wrap">
+                    {% if plan["status"] == "pending" %}
+                      <span class="badge text-bg-warning">Open</span>
+                      <form method="post" action="{{ url_for('complete_plan', plan_id=plan['id']) }}">
+                        <button class="btn btn-success btn-sm">Done</button>
+                      </form>
+                    {% elif plan["status"] == "done" %}
+                      <span class="badge text-bg-success">Done</span>
+                      <form method="post" action="{{ url_for('reopen_plan', plan_id=plan['id']) }}">
+                        <button class="btn btn-outline-secondary btn-sm">Reopen</button>
+                      </form>
+                    {% else %}
+                      <span class="badge text-bg-danger">Missed</span>
+                      <form method="post" action="{{ url_for('reopen_plan', plan_id=plan['id']) }}">
+                        <button class="btn btn-outline-secondary btn-sm">Reopen</button>
+                      </form>
+                    {% endif %}
+                    <form method="post" action="{{ url_for('delete_plan', plan_id=plan['id']) }}">
+                      <button class="btn btn-outline-danger btn-sm">Delete</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {% else %}
+              <div class="text-muted">No plan items yet. Add one on the left.</div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-4">
+        <div class="col-12 col-lg-6">
+          <div class="card shadow-sm border-0 h-100">
+            <div class="card-body p-4">
+              <div class="d-flex align-items-center justify-content-between mb-3">
+                <h5 class="mb-0">Routines</h5>
+                <span class="badge bg-light text-dark">Morning / Evening</span>
+              </div>
+              {% for routine in routines %}
+                <div class="mb-3">
+                  <div class="fw-semibold">{{ routine["name"] }}</div>
+                  <div class="small text-muted text-uppercase">{{ routine["time_of_day"] }}</div>
+                  <div class="mt-2 vstack gap-2">
+                    {% for item in routine["items"] %}
+                      <div class="d-flex align-items-center justify-content-between">
+                        <span class="{{ 'text-decoration-line-through text-muted' if item['done'] else '' }}">{{ item["label"] }}</span>
+                        <form method="post" action="{{ url_for('toggle_routine_item', item_id=item['id']) }}">
+                          <button class="btn btn-sm {{ 'btn-success' if item['done'] else 'btn-outline-secondary' }}">
+                            {{ "Done" if item['done'] else "Mark" }}
+                          </button>
+                        </form>
+                      </div>
+                    {% else %}
+                      <span class="text-muted">No items yet.</span>
+                    {% endfor %}
+                  </div>
+                </div>
+              {% else %}
+                <span class="text-muted">Add your first routine below.</span>
+              {% endfor %}
+
+              <div class="border-top pt-3 mt-3">
+                <form method="post" action="{{ url_for('add_routine') }}" class="vstack gap-2">
+                  <input class="form-control" name="name" placeholder="New routine name" required>
+                  <div class="d-flex gap-2">
+                    <select class="form-select" name="time_of_day">
+                      <option value="morning">Morning</option>
+                      <option value="afternoon">Afternoon</option>
+                      <option value="evening">Evening</option>
+                      <option value="any">Anytime</option>
+                    </select>
+                    <button class="btn btn-outline-primary">Add routine</button>
+                  </div>
+                </form>
+                <form method="post" action="{{ url_for('add_routine_item') }}" class="vstack gap-2 mt-2">
+                  <select class="form-select" name="routine_id" required>
+                    <option value="">Select routine</option>
+                    {% for routine in routines %}
+                      <option value="{{ routine['id'] }}">{{ routine["name"] }}</option>
+                    {% endfor %}
+                  </select>
+                  <div class="d-flex gap-2">
+                    <input class="form-control" name="label" placeholder="Routine step" required>
+                    <input class="form-control" name="sort_order" placeholder="Order" value="0">
+                  </div>
+                  <button class="btn btn-outline-primary">Add step</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-lg-6">
+          <div class="card shadow-sm border-0 h-100">
+            <div class="card-body p-4">
+              <div class="d-flex align-items-center justify-content-between mb-3">
+                <h5 class="mb-0">Habits</h5>
+                <span class="badge bg-light text-dark">Daily streaks</span>
+              </div>
+              <div class="vstack gap-3">
+                {% for habit in habits %}
+                  {% set count = habit_log_map.get(habit["id"], 0) %}
+                  {% set habit_progress = (count / habit["target_count"] * 100) if habit["target_count"] else 0 %}
+                  {% set habit_progress_capped = habit_progress if habit_progress < 100 else 100 %}
+                  {% if habit_progress < 70 %}
+                    {% set habit_progress_class = "bg-danger" %}
+                  {% elif habit_progress < 90 %}
+                    {% set habit_progress_class = "bg-warning" %}
+                  {% else %}
+                    {% set habit_progress_class = "bg-success" %}
+                  {% endif %}
+                  <div class="card border-0 habit-card">
+                    <div class="card-body d-flex align-items-center justify-content-between">
+                      <div>
+                        <div class="fw-semibold">{{ habit["name"] }}</div>
+                        <div class="small text-muted">
+                          Target {{ habit["target_count"] }} - Logged {{ count }}
+                          - Streak {{ habit_streaks.get(habit["id"], 0) }} days
+                        </div>
+                        <div class="progress habit-progress mt-2" role="progressbar" aria-label="Habit progress" aria-valuenow="{{ habit_progress }}" aria-valuemin="0" aria-valuemax="100">
+                          <div class="progress-bar {{ habit_progress_class }}" style="width: {{ habit_progress_capped }}%"></div>
+                        </div>
+                      </div>
+                      <div class="d-flex gap-2">
+                        <form method="post" action="{{ url_for('log_habit', habit_id=habit['id']) }}">
+                          <button class="btn btn-sm btn-primary">+1</button>
+                        </form>
+                        <form method="post" action="{{ url_for('reset_habit', habit_id=habit['id']) }}">
+                          <button class="btn btn-sm btn-outline-secondary">Reset</button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+                {% else %}
+                  <span class="text-muted">No habits yet. Add one below.</span>
+                {% endfor %}
+              </div>
+              <form method="post" action="{{ url_for('add_habit') }}" class="vstack gap-2 mt-3">
+                <input class="form-control" name="name" placeholder="New habit" required>
+                <div class="d-flex gap-2">
+                  <input class="form-control" name="target_count" value="1">
+                  <button class="btn btn-outline-primary">Add habit</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card shadow-sm border-0">
+            <div class="card-body p-4">
+              <div class="d-flex align-items-center justify-content-between mb-3">
+                <h5 class="mb-0">Daily Reflection</h5>
+                <span class="badge bg-light text-dark">End of day</span>
+              </div>
+              <form method="post" action="{{ url_for('save_reflection') }}" class="vstack gap-3">
+                <input type="hidden" name="log_date" value="{{ today_iso }}">
+                <div class="row g-2">
+                  <div class="col-12 col-md-4">
+                    <input class="form-control" name="mood" placeholder="Mood (e.g., Calm, Focused)" value="{{ reflection['mood'] if reflection else '' }}">
+                  </div>
+                  <div class="col-12 col-md-8">
+                    <input class="form-control" name="wins" placeholder="Wins today" value="{{ reflection['wins'] if reflection else '' }}">
+                  </div>
+                </div>
+                <input class="form-control" name="blockers" placeholder="Blockers or lessons" value="{{ reflection['blockers'] if reflection else '' }}">
+                <input class="form-control" name="gratitude" placeholder="Gratitude" value="{{ reflection['gratitude'] if reflection else '' }}">
+                <button class="btn btn-outline-primary">Save reflection</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
