@@ -20,9 +20,23 @@
             <a class="nav-link p-0" href="{{ url_for('index') }}">Today</a>
             <a class="nav-link p-0" href="{{ url_for('weekly_review') }}">Weekly Review</a>
             <a class="nav-link p-0" href="{{ url_for('about') }}">About</a>
+            {% if current_user %}
+              <a class="nav-link p-0" href="{{ url_for('invites') }}">Invite</a>
+            {% endif %}
           </div>
         </div>
-        <span class="badge bg-dark text-white">{{ now.strftime("%A, %B %d, %Y %I:%M %p") }}</span>
+        <div class="d-flex align-items-center gap-3">
+          {% if current_user %}
+            <span class="small text-muted">Hi {{ current_user["username"] }}</span>
+            <form method="post" action="{{ url_for('logout') }}">
+              <button class="btn btn-outline-dark btn-sm">Logout</button>
+            </form>
+          {% else %}
+            <a class="btn btn-outline-dark btn-sm" href="{{ url_for('login') }}">Login</a>
+            <a class="btn btn-dark btn-sm" href="{{ url_for('register') }}">Register</a>
+          {% endif %}
+          <span class="badge bg-dark text-white">{{ now.strftime("%A, %B %d, %Y %I:%M %p") }}</span>
+        </div>
       </div>
     </nav>
 

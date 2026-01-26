@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-12 col-md-6 col-lg-4">
+      <div class="card shadow-lg border-0">
+        <div class="card-body p-4">
+          <h4 class="mb-3">Create your account</h4>
+          <p class="text-muted">Everything is private to your login.</p>
+          {% if invite %}
+            <div class="alert alert-info py-2">Invite accepted. Create your account.</div>
+          {% endif %}
+          {% if error %}
+            <div class="alert alert-danger py-2">{{ error }}</div>
+          {% endif %}
+          <form method="post" action="{{ url_for('register') }}" class="vstack gap-3">
+            <input class="form-control" name="username" placeholder="Username" required>
+            <input class="form-control" type="password" name="password" placeholder="Password" required>
+            <input class="form-control" type="password" name="confirm" placeholder="Confirm password" required>
+            <button class="btn btn-primary w-100">Create account</button>
+          </form>
+          <div class="small text-muted mt-3">
+            Already have an account? <a href="{{ url_for('login') }}">Login</a>.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

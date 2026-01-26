@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, date, timedelta
+from functools import wraps
+import os
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import TypedDict
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, g, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "tasks.db"
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 _db_ready = False
 
 
@@ -27,6 +32,35 @@ class Routine(TypedDict):
     items: list[RoutineItem]
 
 
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if g.user is None:
+            return redirect(url_for("login"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+@app.before_request
+def load_user() -> None:
+    user_id = session.get("user_id")
+    if user_id is None:
+        g.user = None
+        return
+
+    with get_conn() as conn:
+        g.user = conn.execute(
+            "SELECT id, username FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+
+
+@app.context_processor
+def inject_user():
+    return {"current_user": g.user}
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -37,8 +71,26 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                inviter_user_id INTEGER NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_by_user_id INTEGER,
+                FOREIGN KEY (inviter_user_id) REFERENCES users (id)
+            );
+
             CREATE TABLE IF NOT EXISTS plans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 time_block TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL DEFAULT 2,
@@ -49,6 +101,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS checklist_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 label TEXT NOT NULL,
                 scheduled_date TEXT NOT NULL,
                 done INTEGER NOT NULL DEFAULT 0,
@@ -57,6 +110,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS routines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 time_of_day TEXT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1
@@ -65,6 +119,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS routine_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 routine_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
                 label TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (routine_id) REFERENCES routines (id)
@@ -73,6 +128,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS routine_item_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 routine_item_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
                 log_date TEXT NOT NULL,
                 done INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (routine_item_id, log_date),
@@ -81,6 +137,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS habits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 target_count INTEGER NOT NULL DEFAULT 1,
                 active INTEGER NOT NULL DEFAULT 1
@@ -89,6 +146,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS habit_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 habit_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
                 log_date TEXT NOT NULL,
                 count INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (habit_id, log_date),
@@ -97,6 +155,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS spending_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 amount REAL NOT NULL,
                 category TEXT NOT NULL,
                 note TEXT NOT NULL,
@@ -106,23 +165,28 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS spending_budgets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
                 daily_limit REAL NOT NULL DEFAULT 0,
-                weekly_limit REAL NOT NULL DEFAULT 0
+                weekly_limit REAL NOT NULL DEFAULT 0,
+                UNIQUE (user_id, category)
             );
 
             CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
                 daily_spend_limit REAL NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS daily_reflections (
-                log_date TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                log_date TEXT NOT NULL,
                 mood TEXT NOT NULL DEFAULT '',
                 wins TEXT NOT NULL DEFAULT '',
                 blockers TEXT NOT NULL DEFAULT '',
                 gratitude TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, log_date)
             );
             """
         )
@@ -132,7 +196,139 @@ def ensure_db() -> None:
     global _db_ready
     if not _db_ready:
         init_db()
+        migrate_db()
         _db_ready = True
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def migrate_db() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        if table_exists(conn, "settings") and not column_exists(conn, "settings", "user_id"):
+            conn.execute("ALTER TABLE settings RENAME TO settings_old")
+            conn.execute(
+                """
+                CREATE TABLE settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO settings (user_id, daily_spend_limit)
+                SELECT 1, daily_spend_limit FROM settings_old
+                """
+            )
+            conn.execute("DROP TABLE settings_old")
+
+        if table_exists(conn, "daily_reflections") and not column_exists(
+            conn, "daily_reflections", "user_id"
+        ):
+            conn.execute("ALTER TABLE daily_reflections RENAME TO daily_reflections_old")
+            conn.execute(
+                """
+                CREATE TABLE daily_reflections (
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    mood TEXT NOT NULL DEFAULT '',
+                    wins TEXT NOT NULL DEFAULT '',
+                    blockers TEXT NOT NULL DEFAULT '',
+                    gratitude TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, log_date)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_reflections (
+                    user_id, log_date, mood, wins, blockers, gratitude, created_at
+                )
+                SELECT 1, log_date, mood, wins, blockers, gratitude, created_at
+                FROM daily_reflections_old
+                """
+            )
+            conn.execute("DROP TABLE daily_reflections_old")
+
+        if table_exists(conn, "spending_budgets") and not column_exists(
+            conn, "spending_budgets", "user_id"
+        ):
+            conn.execute("ALTER TABLE spending_budgets RENAME TO spending_budgets_old")
+            conn.execute(
+                """
+                CREATE TABLE spending_budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    daily_limit REAL NOT NULL DEFAULT 0,
+                    weekly_limit REAL NOT NULL DEFAULT 0,
+                    UNIQUE (user_id, category)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO spending_budgets (user_id, category, daily_limit, weekly_limit)
+                SELECT 1, category, daily_limit, weekly_limit FROM spending_budgets_old
+                """
+            )
+            conn.execute("DROP TABLE spending_budgets_old")
+
+        if not table_exists(conn, "invites"):
+            conn.execute(
+                """
+                CREATE TABLE invites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    inviter_user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_by_user_id INTEGER,
+                    FOREIGN KEY (inviter_user_id) REFERENCES users (id)
+                )
+                """
+            )
+
+        tables_to_update = [
+            "plans",
+            "checklist_items",
+            "routines",
+            "routine_items",
+            "routine_item_logs",
+            "habits",
+            "habit_logs",
+            "spending_entries",
+        ]
+        for table in tables_to_update:
+            if table_exists(conn, table) and not column_exists(conn, table, "user_id"):
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"
+                )
+                conn.execute(f"UPDATE {table} SET user_id = 1 WHERE user_id IS NULL")
 
 
 def today_str() -> str:
@@ -153,12 +349,21 @@ def parse_float(value: str, default: float) -> float:
         return default
 
 
-def get_settings() -> sqlite3.Row:
+def get_settings(user_id: int) -> sqlite3.Row:
     with get_conn() as conn:
-        settings = conn.execute("SELECT * FROM settings WHERE id = 1").fetchone()
+        settings = conn.execute(
+            "SELECT * FROM settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         if settings is None:
-            conn.execute("INSERT INTO settings (id, daily_spend_limit) VALUES (1, 0)")
-            settings = conn.execute("SELECT * FROM settings WHERE id = 1").fetchone()
+            conn.execute(
+                "INSERT INTO settings (user_id, daily_spend_limit) VALUES (?, 0)",
+                (user_id,),
+            )
+            settings = conn.execute(
+                "SELECT * FROM settings WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
     return settings
 
 
@@ -188,20 +393,20 @@ def compute_habit_streaks(
     return streaks
 
 
-def update_missed_plans() -> None:
+def update_missed_plans(user_id: int) -> None:
     today_iso = today_str()
     with get_conn() as conn:
         conn.execute(
             """
             UPDATE plans
             SET status = 'missed'
-            WHERE status = 'pending' AND scheduled_date < ?
+            WHERE status = 'pending' AND scheduled_date < ? AND user_id = ?
             """,
-            (today_iso,),
+            (today_iso, user_id),
         )
 
 
-def get_overview_stats() -> dict[str, int]:
+def get_overview_stats(user_id: int) -> dict[str, int]:
     stats = {
         "plans": 0,
         "checklist": 0,
@@ -210,22 +415,35 @@ def get_overview_stats() -> dict[str, int]:
         "spending_entries": 0,
     }
     with get_conn() as conn:
-        stats["plans"] = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
-        stats["checklist"] = conn.execute(
-            "SELECT COUNT(*) FROM checklist_items"
+        stats["plans"] = conn.execute(
+            "SELECT COUNT(*) FROM plans WHERE user_id = ?",
+            (user_id,),
         ).fetchone()[0]
-        stats["habits"] = conn.execute("SELECT COUNT(*) FROM habits").fetchone()[0]
-        stats["routines"] = conn.execute("SELECT COUNT(*) FROM routines").fetchone()[0]
+        stats["checklist"] = conn.execute(
+            "SELECT COUNT(*) FROM checklist_items WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+        stats["habits"] = conn.execute(
+            "SELECT COUNT(*) FROM habits WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+        stats["routines"] = conn.execute(
+            "SELECT COUNT(*) FROM routines WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
         stats["spending_entries"] = conn.execute(
-            "SELECT COUNT(*) FROM spending_entries"
+            "SELECT COUNT(*) FROM spending_entries WHERE user_id = ?",
+            (user_id,),
         ).fetchone()[0]
     return stats
 
 
 @app.route("/", methods=["GET"])
+@login_required
 def index():
     ensure_db()
-    update_missed_plans()
+    user_id = g.user["id"]
+    update_missed_plans(user_id)
     today_iso = today_str()
     week_start = (date.today() - timedelta(days=6)).strftime("%Y-%m-%d")
     year_start = (date.today() - timedelta(days=365)).strftime("%Y-%m-%d")
@@ -234,80 +452,95 @@ def index():
         plans = conn.execute(
             """
             SELECT * FROM plans
-            WHERE scheduled_date = ?
+            WHERE scheduled_date = ? AND user_id = ?
             ORDER BY priority DESC, id ASC
             """,
-            (today_iso,),
+            (today_iso, user_id),
         ).fetchall()
         checklist = conn.execute(
             """
             SELECT * FROM checklist_items
-            WHERE scheduled_date = ?
+            WHERE scheduled_date = ? AND user_id = ?
             ORDER BY id ASC
             """,
-            (today_iso,),
+            (today_iso, user_id),
         ).fetchall()
         habits = conn.execute(
-            "SELECT * FROM habits WHERE active = 1 ORDER BY id ASC"
+            "SELECT * FROM habits WHERE active = 1 AND user_id = ? ORDER BY id ASC",
+            (user_id,),
         ).fetchall()
         habit_logs = conn.execute(
-            "SELECT habit_id, count FROM habit_logs WHERE log_date = ?",
-            (today_iso,),
+            """
+            SELECT habit_id, count FROM habit_logs
+            WHERE log_date = ? AND user_id = ?
+            """,
+            (today_iso, user_id),
         ).fetchall()
         habit_logs_all = conn.execute(
             """
             SELECT habit_id, log_date, count
             FROM habit_logs
-            WHERE log_date BETWEEN ? AND ?
+            WHERE log_date BETWEEN ? AND ? AND user_id = ?
             """,
-            (year_start, today_iso),
+            (year_start, today_iso, user_id),
         ).fetchall()
         routines = conn.execute(
-            "SELECT * FROM routines WHERE active = 1 ORDER BY time_of_day, name"
+            """
+            SELECT * FROM routines
+            WHERE active = 1 AND user_id = ?
+            ORDER BY time_of_day, name
+            """,
+            (user_id,),
         ).fetchall()
         routine_items = conn.execute(
             """
             SELECT * FROM routine_items
-            WHERE routine_id IN (SELECT id FROM routines WHERE active = 1)
+            WHERE routine_id IN (SELECT id FROM routines WHERE active = 1 AND user_id = ?)
+                AND user_id = ?
             ORDER BY sort_order, id
-            """
+            """,
+            (user_id, user_id),
         ).fetchall()
         routine_logs = conn.execute(
-            "SELECT routine_item_id, done FROM routine_item_logs WHERE log_date = ?",
-            (today_iso,),
+            """
+            SELECT routine_item_id, done FROM routine_item_logs
+            WHERE log_date = ? AND user_id = ?
+            """,
+            (today_iso, user_id),
         ).fetchall()
         spending_entries = conn.execute(
             """
             SELECT * FROM spending_entries
-            WHERE spend_date = ?
+            WHERE spend_date = ? AND user_id = ?
             ORDER BY created_at DESC
             """,
-            (today_iso,),
+            (today_iso, user_id),
         ).fetchall()
         spending_budgets = conn.execute(
-            "SELECT * FROM spending_budgets ORDER BY category"
+            "SELECT * FROM spending_budgets WHERE user_id = ? ORDER BY category",
+            (user_id,),
         ).fetchall()
         spending_by_category = conn.execute(
             """
             SELECT category, SUM(amount) as total
             FROM spending_entries
-            WHERE spend_date = ?
+            WHERE spend_date = ? AND user_id = ?
             GROUP BY category
             """,
-            (today_iso,),
+            (today_iso, user_id),
         ).fetchall()
         spending_by_category_week = conn.execute(
             """
             SELECT category, SUM(amount) as total
             FROM spending_entries
-            WHERE spend_date BETWEEN ? AND ?
+            WHERE spend_date BETWEEN ? AND ? AND user_id = ?
             GROUP BY category
             """,
-            (week_start, today_iso),
+            (week_start, today_iso, user_id),
         ).fetchall()
         reflection = conn.execute(
-            "SELECT * FROM daily_reflections WHERE log_date = ?",
-            (today_iso,),
+            "SELECT * FROM daily_reflections WHERE log_date = ? AND user_id = ?",
+            (today_iso, user_id),
         ).fetchone()
 
     habit_log_map = {row["habit_id"]: row["count"] for row in habit_logs}
@@ -317,7 +550,7 @@ def index():
     spend_week_category_map = {
         row["category"]: row["total"] for row in spending_by_category_week
     }
-    settings = get_settings()
+    settings = get_settings(user_id)
 
     routine_map: dict[int, Routine] = {}
     for routine in routines:
@@ -392,17 +625,21 @@ def index():
 
 
 @app.route("/about", methods=["GET"])
+@login_required
 def about():
     ensure_db()
-    update_missed_plans()
-    stats = get_overview_stats()
+    user_id = g.user["id"]
+    update_missed_plans(user_id)
+    stats = get_overview_stats(user_id)
     return render_template("about.html", stats=stats, now=datetime.now())
 
 
 @app.route("/review", methods=["GET"])
+@login_required
 def weekly_review():
     ensure_db()
-    update_missed_plans()
+    user_id = g.user["id"]
+    update_missed_plans(user_id)
     today = date.today()
     start = today - timedelta(days=6)
     start_iso = start.strftime("%Y-%m-%d")
@@ -413,42 +650,42 @@ def weekly_review():
             """
             SELECT status, COUNT(*) as count
             FROM plans
-            WHERE scheduled_date BETWEEN ? AND ?
+            WHERE scheduled_date BETWEEN ? AND ? AND user_id = ?
             GROUP BY status
             """,
-            (start_iso, end_iso),
+            (start_iso, end_iso, user_id),
         ).fetchall()
         spending_by_day = conn.execute(
             """
             SELECT spend_date, SUM(amount) as total
             FROM spending_entries
-            WHERE spend_date BETWEEN ? AND ?
+            WHERE spend_date BETWEEN ? AND ? AND user_id = ?
             GROUP BY spend_date
             ORDER BY spend_date DESC
             """,
-            (start_iso, end_iso),
+            (start_iso, end_iso, user_id),
         ).fetchall()
         spending_by_category = conn.execute(
             """
             SELECT category, SUM(amount) as total
             FROM spending_entries
-            WHERE spend_date BETWEEN ? AND ?
+            WHERE spend_date BETWEEN ? AND ? AND user_id = ?
             GROUP BY category
             ORDER BY total DESC
             """,
-            (start_iso, end_iso),
+            (start_iso, end_iso, user_id),
         ).fetchall()
         habit_counts = conn.execute(
             """
             SELECT h.name, SUM(hl.count) as total
             FROM habits h
             LEFT JOIN habit_logs hl ON h.id = hl.habit_id
-                AND hl.log_date BETWEEN ? AND ?
-            WHERE h.active = 1
+                AND hl.log_date BETWEEN ? AND ? AND hl.user_id = ?
+            WHERE h.active = 1 AND h.user_id = ?
             GROUP BY h.id
             ORDER BY total DESC
             """,
-            (start_iso, end_iso),
+            (start_iso, end_iso, user_id, user_id),
         ).fetchall()
         routine_completions = conn.execute(
             """
@@ -456,12 +693,12 @@ def weekly_review():
             FROM routines r
             LEFT JOIN routine_items ri ON r.id = ri.routine_id
             LEFT JOIN routine_item_logs ril ON ri.id = ril.routine_item_id
-                AND ril.log_date BETWEEN ? AND ?
-            WHERE r.active = 1
+                AND ril.log_date BETWEEN ? AND ? AND ril.user_id = ?
+            WHERE r.active = 1 AND r.user_id = ?
             GROUP BY r.id
             ORDER BY total DESC
             """,
-            (start_iso, end_iso),
+            (start_iso, end_iso, user_id, user_id),
         ).fetchall()
 
     plan_stat_map = {row["status"]: row["count"] for row in plan_stats}
@@ -478,9 +715,228 @@ def weekly_review():
     )
 
 
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    ensure_db()
+    if g.user is not None:
+        return redirect(url_for("index"))
+
+    error = ""
+    invite_token = session.get("invite_token")
+    if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+
+        if not username or not password:
+            error = "Username and password are required."
+        elif password != confirm:
+            error = "Passwords do not match."
+        else:
+            if invite_token:
+                with get_conn() as conn:
+                    invite = conn.execute(
+                        """
+                        SELECT * FROM invites
+                        WHERE token = ? AND used_by_user_id IS NULL
+                          AND expires_at >= ?
+                        """,
+                        (invite_token, datetime.now().isoformat(timespec="seconds")),
+                    ).fetchone()
+                if invite is None:
+                    error = "That invite link is invalid or expired."
+                    return render_template("register.html", error=error, now=datetime.now())
+
+            now = datetime.now().isoformat(timespec="seconds")
+            with get_conn() as conn:
+                user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                try:
+                    if user_count == 0:
+                        conn.execute(
+                            """
+                            INSERT INTO users (id, username, password_hash, created_at)
+                            VALUES (1, ?, ?, ?)
+                            """,
+                            (username, generate_password_hash(password), now),
+                        )
+                        user_id = 1
+                        conn.execute(
+                            "UPDATE plans SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE checklist_items SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE routines SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE routine_items SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE routine_item_logs SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE habits SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE habit_logs SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE spending_entries SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE spending_budgets SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE settings SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                        conn.execute(
+                            "UPDATE daily_reflections SET user_id = 1 WHERE user_id IS NULL"
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO users (username, password_hash, created_at)
+                            VALUES (?, ?, ?)
+                            """,
+                            (username, generate_password_hash(password), now),
+                        )
+                        user_id = conn.execute(
+                            "SELECT id FROM users WHERE username = ?",
+                            (username,),
+                        ).fetchone()[0]
+
+                    if invite_token:
+                        conn.execute(
+                            """
+                            UPDATE invites
+                            SET used_by_user_id = ?
+                            WHERE token = ?
+                            """,
+                            (user_id, invite_token),
+                        )
+                        session.pop("invite_token", None)
+                except sqlite3.IntegrityError:
+                    error = "That username is taken."
+                else:
+                    session["user_id"] = user_id
+                    return redirect(url_for("index"))
+
+    return render_template("register.html", error=error, now=datetime.now(), invite=invite_token)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    ensure_db()
+    if g.user is not None:
+        return redirect(url_for("index"))
+
+    error = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
+        password = request.form.get("password", "")
+
+        with get_conn() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+
+        if user is None or not check_password_hash(user["password_hash"], password):
+            error = "Invalid username or password."
+        else:
+            session["user_id"] = user["id"]
+            return redirect(url_for("index"))
+
+    return render_template("login.html", error=error, now=datetime.now())
+
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/invite/<token>", methods=["GET"])
+def accept_invite(token: str):
+    ensure_db()
+    with get_conn() as conn:
+        invite = conn.execute(
+            """
+            SELECT * FROM invites
+            WHERE token = ? AND used_by_user_id IS NULL
+              AND expires_at >= ?
+            """,
+            (token, datetime.now().isoformat(timespec="seconds")),
+        ).fetchone()
+    if invite is None:
+        return render_template("invite_invalid.html", now=datetime.now())
+
+    session["invite_token"] = token
+    return redirect(url_for("register"))
+
+
+@app.route("/invites", methods=["GET"])
+@login_required
+def invites():
+    ensure_db()
+    user_id = g.user["id"]
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        active_invites = conn.execute(
+            """
+            SELECT * FROM invites
+            WHERE inviter_user_id = ?
+              AND expires_at >= ?
+              AND used_by_user_id IS NULL
+            ORDER BY created_at DESC
+            """,
+            (user_id, now),
+        ).fetchall()
+        used_invites = conn.execute(
+            """
+            SELECT i.*, u.username as used_by
+            FROM invites i
+            LEFT JOIN users u ON u.id = i.used_by_user_id
+            WHERE i.inviter_user_id = ?
+              AND i.used_by_user_id IS NOT NULL
+            ORDER BY i.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return render_template(
+        "invites.html",
+        now=datetime.now(),
+        active_invites=active_invites,
+        used_invites=used_invites,
+    )
+
+
+@app.route("/invites/create", methods=["POST"])
+@login_required
+def create_invite():
+    ensure_db()
+    user_id = g.user["id"]
+    token = secrets.token_urlsafe(16)
+    now = datetime.now()
+    expires_at = (now + timedelta(days=7)).isoformat(timespec="seconds")
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO invites (inviter_user_id, token, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, token, now.isoformat(timespec="seconds"), expires_at),
+        )
+    return redirect(url_for("invites"))
+
+
 @app.route("/plan/add", methods=["POST"])
+@login_required
 def add_plan():
     ensure_db()
+    user_id = g.user["id"]
     title = request.form.get("title", "").strip()
     time_block = request.form.get("time_block", "").strip()
     priority = parse_int(request.form.get("priority", "2"), 2)
@@ -493,47 +949,55 @@ def add_plan():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO plans (title, time_block, priority, scheduled_date, created_at, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
+            INSERT INTO plans (user_id, title, time_block, priority, scheduled_date, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending')
             """,
-            (title, time_block, priority, scheduled_date, now),
+            (user_id, title, time_block, priority, scheduled_date, now),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/plan/complete/<int:plan_id>", methods=["POST"])
+@login_required
 def complete_plan(plan_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
         conn.execute(
-            "UPDATE plans SET status = 'done' WHERE id = ?",
-            (plan_id,),
+            "UPDATE plans SET status = 'done' WHERE id = ? AND user_id = ?",
+            (plan_id, user_id),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/plan/reopen/<int:plan_id>", methods=["POST"])
+@login_required
 def reopen_plan(plan_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
         conn.execute(
-            "UPDATE plans SET status = 'pending' WHERE id = ?",
-            (plan_id,),
+            "UPDATE plans SET status = 'pending' WHERE id = ? AND user_id = ?",
+            (plan_id, user_id),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/plan/delete/<int:plan_id>", methods=["POST"])
+@login_required
 def delete_plan(plan_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
-        conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+        conn.execute("DELETE FROM plans WHERE id = ? AND user_id = ?", (plan_id, user_id))
     return redirect(url_for("index"))
 
 
 @app.route("/checklist/add", methods=["POST"])
+@login_required
 def add_checklist_item():
     ensure_db()
+    user_id = g.user["id"]
     label = request.form.get("label", "").strip()
     scheduled_date = request.form.get("scheduled_date", "").strip() or today_str()
 
@@ -544,43 +1008,52 @@ def add_checklist_item():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO checklist_items (label, scheduled_date, done, created_at)
-            VALUES (?, ?, 0, ?)
+            INSERT INTO checklist_items (user_id, label, scheduled_date, done, created_at)
+            VALUES (?, ?, ?, 0, ?)
             """,
-            (label, scheduled_date, now),
+            (user_id, label, scheduled_date, now),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/checklist/toggle/<int:item_id>", methods=["POST"])
+@login_required
 def toggle_checklist_item(item_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
         current = conn.execute(
-            "SELECT done FROM checklist_items WHERE id = ?",
-            (item_id,),
+            "SELECT done FROM checklist_items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
         ).fetchone()
         if current is None:
             return redirect(url_for("index"))
         new_value = 0 if current["done"] else 1
         conn.execute(
-            "UPDATE checklist_items SET done = ? WHERE id = ?",
-            (new_value, item_id),
+            "UPDATE checklist_items SET done = ? WHERE id = ? AND user_id = ?",
+            (new_value, item_id, user_id),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/checklist/delete/<int:item_id>", methods=["POST"])
+@login_required
 def delete_checklist_item(item_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
-        conn.execute("DELETE FROM checklist_items WHERE id = ?", (item_id,))
+        conn.execute(
+            "DELETE FROM checklist_items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
     return redirect(url_for("index"))
 
 
 @app.route("/routines/add", methods=["POST"])
+@login_required
 def add_routine():
     ensure_db()
+    user_id = g.user["id"]
     name = request.form.get("name", "").strip()
     time_of_day = request.form.get("time_of_day", "any").strip()
 
@@ -589,15 +1062,20 @@ def add_routine():
 
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO routines (name, time_of_day, active) VALUES (?, ?, 1)",
-            (name, time_of_day),
+            """
+            INSERT INTO routines (user_id, name, time_of_day, active)
+            VALUES (?, ?, ?, 1)
+            """,
+            (user_id, name, time_of_day),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/routine-items/add", methods=["POST"])
+@login_required
 def add_routine_item():
     ensure_db()
+    user_id = g.user["id"]
     routine_id = request.form.get("routine_id", "").strip()
     label = request.form.get("label", "").strip()
     sort_order = parse_int(request.form.get("sort_order", "0"), 0)
@@ -606,35 +1084,49 @@ def add_routine_item():
         return redirect(url_for("index"))
 
     with get_conn() as conn:
+        routine = conn.execute(
+            "SELECT id FROM routines WHERE id = ? AND user_id = ?",
+            (routine_id, user_id),
+        ).fetchone()
+        if routine is None:
+            return redirect(url_for("index"))
         conn.execute(
             """
-            INSERT INTO routine_items (routine_id, label, sort_order)
-            VALUES (?, ?, ?)
+            INSERT INTO routine_items (routine_id, user_id, label, sort_order)
+            VALUES (?, ?, ?, ?)
             """,
-            (routine_id, label, sort_order),
+            (routine_id, user_id, label, sort_order),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/routine-items/toggle/<int:item_id>", methods=["POST"])
+@login_required
 def toggle_routine_item(item_id: int):
     ensure_db()
+    user_id = g.user["id"]
     log_date = today_str()
     with get_conn() as conn:
+        item = conn.execute(
+            "SELECT id FROM routine_items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        ).fetchone()
+        if item is None:
+            return redirect(url_for("index"))
         current = conn.execute(
             """
             SELECT done FROM routine_item_logs
-            WHERE routine_item_id = ? AND log_date = ?
+            WHERE routine_item_id = ? AND log_date = ? AND user_id = ?
             """,
-            (item_id, log_date),
+            (item_id, log_date, user_id),
         ).fetchone()
         if current is None:
             conn.execute(
                 """
-                INSERT INTO routine_item_logs (routine_item_id, log_date, done)
-                VALUES (?, ?, 1)
+                INSERT INTO routine_item_logs (routine_item_id, user_id, log_date, done)
+                VALUES (?, ?, ?, 1)
                 """,
-                (item_id, log_date),
+                (item_id, user_id, log_date),
             )
         else:
             new_value = 0 if current["done"] else 1
@@ -642,16 +1134,18 @@ def toggle_routine_item(item_id: int):
                 """
                 UPDATE routine_item_logs
                 SET done = ?
-                WHERE routine_item_id = ? AND log_date = ?
+                WHERE routine_item_id = ? AND log_date = ? AND user_id = ?
                 """,
-                (new_value, item_id, log_date),
+                (new_value, item_id, log_date, user_id),
             )
     return redirect(url_for("index"))
 
 
 @app.route("/habits/add", methods=["POST"])
+@login_required
 def add_habit():
     ensure_db()
+    user_id = g.user["id"]
     name = request.form.get("name", "").strip()
     target_count = parse_int(request.form.get("target_count", "1"), 1)
 
@@ -660,63 +1154,84 @@ def add_habit():
 
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO habits (name, target_count, active) VALUES (?, ?, 1)",
-            (name, target_count),
+            """
+            INSERT INTO habits (user_id, name, target_count, active)
+            VALUES (?, ?, ?, 1)
+            """,
+            (user_id, name, target_count),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/habits/log/<int:habit_id>", methods=["POST"])
+@login_required
 def log_habit(habit_id: int):
     ensure_db()
+    user_id = g.user["id"]
     log_date = today_str()
     with get_conn() as conn:
+        habit = conn.execute(
+            "SELECT id FROM habits WHERE id = ? AND user_id = ?",
+            (habit_id, user_id),
+        ).fetchone()
+        if habit is None:
+            return redirect(url_for("index"))
         current = conn.execute(
             """
             SELECT count FROM habit_logs
-            WHERE habit_id = ? AND log_date = ?
+            WHERE habit_id = ? AND log_date = ? AND user_id = ?
             """,
-            (habit_id, log_date),
+            (habit_id, log_date, user_id),
         ).fetchone()
         if current is None:
             conn.execute(
                 """
-                INSERT INTO habit_logs (habit_id, log_date, count)
-                VALUES (?, ?, 1)
+                INSERT INTO habit_logs (habit_id, user_id, log_date, count)
+                VALUES (?, ?, ?, 1)
                 """,
-                (habit_id, log_date),
+                (habit_id, user_id, log_date),
             )
         else:
             conn.execute(
                 """
                 UPDATE habit_logs
                 SET count = count + 1
-                WHERE habit_id = ? AND log_date = ?
+                WHERE habit_id = ? AND log_date = ? AND user_id = ?
                 """,
-                (habit_id, log_date),
+                (habit_id, log_date, user_id),
             )
     return redirect(url_for("index"))
 
 
 @app.route("/habits/reset/<int:habit_id>", methods=["POST"])
+@login_required
 def reset_habit(habit_id: int):
     ensure_db()
+    user_id = g.user["id"]
     log_date = today_str()
     with get_conn() as conn:
+        habit = conn.execute(
+            "SELECT id FROM habits WHERE id = ? AND user_id = ?",
+            (habit_id, user_id),
+        ).fetchone()
+        if habit is None:
+            return redirect(url_for("index"))
         conn.execute(
             """
-            INSERT INTO habit_logs (habit_id, log_date, count)
-            VALUES (?, ?, 0)
+            INSERT INTO habit_logs (habit_id, user_id, log_date, count)
+            VALUES (?, ?, ?, 0)
             ON CONFLICT(habit_id, log_date) DO UPDATE SET count = 0
             """,
-            (habit_id, log_date),
+            (habit_id, user_id, log_date),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/spending/add", methods=["POST"])
+@login_required
 def add_spending():
     ensure_db()
+    user_id = g.user["id"]
     amount_raw = request.form.get("amount", "").strip()
     category = request.form.get("category", "").strip() or "Other"
     note = request.form.get("note", "").strip() or "Daily spend"
@@ -734,33 +1249,37 @@ def add_spending():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO spending_entries (amount, category, note, spend_date, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO spending_entries (user_id, amount, category, note, spend_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (amount, category, note, spend_date, now),
+            (user_id, amount, category, note, spend_date, now),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/settings/spend-limit", methods=["POST"])
+@login_required
 def update_spend_limit():
     ensure_db()
+    user_id = g.user["id"]
     daily_limit = parse_float(request.form.get("daily_spend_limit", "0"), 0.0)
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO settings (id, daily_spend_limit)
-            VALUES (1, ?)
-            ON CONFLICT(id) DO UPDATE SET daily_spend_limit = excluded.daily_spend_limit
+            INSERT INTO settings (user_id, daily_spend_limit)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET daily_spend_limit = excluded.daily_spend_limit
             """,
-            (daily_limit,),
+            (user_id, daily_limit),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/reflection/save", methods=["POST"])
+@login_required
 def save_reflection():
     ensure_db()
+    user_id = g.user["id"]
     log_date = request.form.get("log_date", "").strip() or today_str()
     mood = request.form.get("mood", "").strip()
     wins = request.form.get("wins", "").strip()
@@ -771,22 +1290,24 @@ def save_reflection():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO daily_reflections (log_date, mood, wins, blockers, gratitude, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(log_date) DO UPDATE SET
+            INSERT INTO daily_reflections (user_id, log_date, mood, wins, blockers, gratitude, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, log_date) DO UPDATE SET
                 mood = excluded.mood,
                 wins = excluded.wins,
                 blockers = excluded.blockers,
                 gratitude = excluded.gratitude
             """,
-            (log_date, mood, wins, blockers, gratitude, created_at),
+            (user_id, log_date, mood, wins, blockers, gratitude, created_at),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/budgets/add", methods=["POST"])
+@login_required
 def add_budget():
     ensure_db()
+    user_id = g.user["id"]
     category = request.form.get("category", "").strip()
     daily_limit = parse_float(request.form.get("daily_limit", "0"), 0.0)
     weekly_limit = parse_float(request.form.get("weekly_limit", "0"), 0.0)
@@ -797,30 +1318,40 @@ def add_budget():
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO spending_budgets (category, daily_limit, weekly_limit)
-            VALUES (?, ?, ?)
-            ON CONFLICT(category) DO UPDATE SET
+            INSERT INTO spending_budgets (user_id, category, daily_limit, weekly_limit)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, category) DO UPDATE SET
                 daily_limit = excluded.daily_limit,
                 weekly_limit = excluded.weekly_limit
             """,
-            (category, daily_limit, weekly_limit),
+            (user_id, category, daily_limit, weekly_limit),
         )
     return redirect(url_for("index"))
 
 
 @app.route("/budgets/delete/<int:budget_id>", methods=["POST"])
+@login_required
 def delete_budget(budget_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
-        conn.execute("DELETE FROM spending_budgets WHERE id = ?", (budget_id,))
+        conn.execute(
+            "DELETE FROM spending_budgets WHERE id = ? AND user_id = ?",
+            (budget_id, user_id),
+        )
     return redirect(url_for("index"))
 
 
 @app.route("/spending/delete/<int:entry_id>", methods=["POST"])
+@login_required
 def delete_spending(entry_id: int):
     ensure_db()
+    user_id = g.user["id"]
     with get_conn() as conn:
-        conn.execute("DELETE FROM spending_entries WHERE id = ?", (entry_id,))
+        conn.execute(
+            "DELETE FROM spending_entries WHERE id = ? AND user_id = ?",
+            (entry_id, user_id),
+        )
     return redirect(url_for("index"))
 
 
