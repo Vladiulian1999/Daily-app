@@ -15,6 +15,7 @@
           {% endif %}
           <form method="post" action="{{ url_for('register') }}" class="vstack gap-3">
             <input class="form-control" name="username" placeholder="Username" required>
+            <input class="form-control" type="email" name="email" placeholder="Email" required>
             <input class="form-control" type="password" name="password" placeholder="Password" required>
             <input class="form-control" type="password" name="confirm" placeholder="Confirm password" required>
             <button class="btn btn-primary w-100">Create account</button>

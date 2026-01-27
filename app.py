@@ -8,11 +8,16 @@ import sqlite3
 from pathlib import Path
 from typing import TypedDict
 
-from flask import Flask, g, redirect, render_template, request, session, url_for
+from flask import Flask, g, redirect, render_template, request, send_from_directory, session, url_for
+import requests
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "tasks.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DB_BACKEND = "postgres" if DATABASE_URL else "sqlite"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
@@ -61,135 +66,344 @@ def inject_user():
     return {"current_user": g.user}
 
 
-def get_conn() -> sqlite3.Connection:
+class DBConn:
+    def __init__(self, conn, backend: str):
+        self.conn = conn
+        self.backend = backend
+
+    def execute(self, query: str, params: tuple | list = ()):
+        if self.backend == "postgres":
+            sql = query.replace("?", "%s")
+            cur = self.conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(sql, params)
+            return cur
+        return self.conn.execute(query, params)
+
+    def executescript(self, script: str) -> None:
+        if self.backend == "postgres":
+            statements = [s.strip() for s in script.split(";") if s.strip()]
+            for statement in statements:
+                self.execute(statement)
+        else:
+            self.conn.executescript(script)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            try:
+                self.conn.commit()
+            except Exception:
+                pass
+        self.conn.close()
+
+
+def get_conn() -> DBConn:
+    if DB_BACKEND == "postgres":
+        conn = psycopg2.connect(DATABASE_URL)
+        return DBConn(conn, "postgres")
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return DBConn(conn, "sqlite")
+
+
+@app.route("/styles.css")
+def styles_css():
+    public_dir = BASE_DIR / "public"
+    return send_from_directory(public_dir, "styles.css")
+
+
+def send_reset_email(to_email: str, token: str, base_url: str) -> bool:
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("RESET_EMAIL_FROM", "").strip()
+    if not api_key or not sender:
+        return False
+
+    reset_link = f"{base_url.rstrip('/')}/password-reset/{token}"
+    payload = {
+        "from": sender,
+        "to": [to_email],
+        "subject": "Reset your Daily Planner Studio password",
+        "html": (
+            "<p>Click the link below to reset your password. "
+            "This link expires in 2 hours.</p>"
+            f"<p><a href=\"{reset_link}\">{reset_link}</a></p>"
+        ),
+    }
+
+    response = requests.post(
+        "https://api.resend.com/emails",
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10,
+    )
+    return response.status_code in (200, 201)
 
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+        if DB_BACKEND == "postgres":
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS invites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                inviter_user_id INTEGER NOT NULL,
-                token TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_by_user_id INTEGER,
-                FOREIGN KEY (inviter_user_id) REFERENCES users (id)
-            );
+                CREATE TABLE IF NOT EXISTS invites (
+                    id SERIAL PRIMARY KEY,
+                    inviter_user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_by_user_id INTEGER
+                );
 
-            CREATE TABLE IF NOT EXISTS plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                time_block TEXT NOT NULL DEFAULT '',
-                priority INTEGER NOT NULL DEFAULT 2,
-                scheduled_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                status TEXT NOT NULL
-            );
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0
+                );
 
-            CREATE TABLE IF NOT EXISTS checklist_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                label TEXT NOT NULL,
-                scheduled_date TEXT NOT NULL,
-                done INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            );
+                CREATE TABLE IF NOT EXISTS plans (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    time_block TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 2,
+                    scheduled_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS routines (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                time_of_day TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1
-            );
+                CREATE TABLE IF NOT EXISTS checklist_items (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    scheduled_date TEXT NOT NULL,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS routine_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                routine_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                label TEXT NOT NULL,
-                sort_order INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (routine_id) REFERENCES routines (id)
-            );
+                CREATE TABLE IF NOT EXISTS routines (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    time_of_day TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
 
-            CREATE TABLE IF NOT EXISTS routine_item_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                routine_item_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                log_date TEXT NOT NULL,
-                done INTEGER NOT NULL DEFAULT 0,
-                UNIQUE (routine_item_id, log_date),
-                FOREIGN KEY (routine_item_id) REFERENCES routine_items (id)
-            );
+                CREATE TABLE IF NOT EXISTS routine_items (
+                    id SERIAL PRIMARY KEY,
+                    routine_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
 
-            CREATE TABLE IF NOT EXISTS habits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                target_count INTEGER NOT NULL DEFAULT 1,
-                active INTEGER NOT NULL DEFAULT 1
-            );
+                CREATE TABLE IF NOT EXISTS routine_item_logs (
+                    id SERIAL PRIMARY KEY,
+                    routine_item_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (routine_item_id, log_date)
+                );
 
-            CREATE TABLE IF NOT EXISTS habit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                habit_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                log_date TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 0,
-                UNIQUE (habit_id, log_date),
-                FOREIGN KEY (habit_id) REFERENCES habits (id)
-            );
+                CREATE TABLE IF NOT EXISTS habits (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    target_count INTEGER NOT NULL DEFAULT 1,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
 
-            CREATE TABLE IF NOT EXISTS spending_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
-                category TEXT NOT NULL,
-                note TEXT NOT NULL,
-                spend_date TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+                CREATE TABLE IF NOT EXISTS habit_logs (
+                    id SERIAL PRIMARY KEY,
+                    habit_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (habit_id, log_date)
+                );
 
-            CREATE TABLE IF NOT EXISTS spending_budgets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                category TEXT NOT NULL,
-                daily_limit REAL NOT NULL DEFAULT 0,
-                weekly_limit REAL NOT NULL DEFAULT 0,
-                UNIQUE (user_id, category)
-            );
+                CREATE TABLE IF NOT EXISTS spending_entries (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    category TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    spend_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL UNIQUE,
-                daily_spend_limit REAL NOT NULL DEFAULT 0
-            );
+                CREATE TABLE IF NOT EXISTS spending_budgets (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    daily_limit REAL NOT NULL DEFAULT 0,
+                    weekly_limit REAL NOT NULL DEFAULT 0,
+                    UNIQUE (user_id, category)
+                );
 
-            CREATE TABLE IF NOT EXISTS daily_reflections (
-                user_id INTEGER NOT NULL,
-                log_date TEXT NOT NULL,
-                mood TEXT NOT NULL DEFAULT '',
-                wins TEXT NOT NULL DEFAULT '',
-                blockers TEXT NOT NULL DEFAULT '',
-                gratitude TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (user_id, log_date)
-            );
-            """
-        )
+                CREATE TABLE IF NOT EXISTS settings (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_reflections (
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    mood TEXT NOT NULL DEFAULT '',
+                    wins TEXT NOT NULL DEFAULT '',
+                    blockers TEXT NOT NULL DEFAULT '',
+                    gratitude TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, log_date)
+                );
+                """
+            )
+        else:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS invites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    inviter_user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_by_user_id INTEGER,
+                    FOREIGN KEY (inviter_user_id) REFERENCES users (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    time_block TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 2,
+                    scheduled_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS checklist_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    scheduled_date TEXT NOT NULL,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS routines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    time_of_day TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS routine_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    routine_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (routine_id) REFERENCES routines (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS routine_item_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    routine_item_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (routine_item_id, log_date),
+                    FOREIGN KEY (routine_item_id) REFERENCES routine_items (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS habits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    target_count INTEGER NOT NULL DEFAULT 1,
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS habit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    habit_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (habit_id, log_date),
+                    FOREIGN KEY (habit_id) REFERENCES habits (id)
+                );
+
+                CREATE TABLE IF NOT EXISTS spending_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    category TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    spend_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS spending_budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    daily_limit REAL NOT NULL DEFAULT 0,
+                    weekly_limit REAL NOT NULL DEFAULT 0,
+                    UNIQUE (user_id, category)
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_reflections (
+                    user_id INTEGER NOT NULL,
+                    log_date TEXT NOT NULL,
+                    mood TEXT NOT NULL DEFAULT '',
+                    wins TEXT NOT NULL DEFAULT '',
+                    blockers TEXT NOT NULL DEFAULT '',
+                    gratitude TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, log_date)
+                );
+                """
+            )
 
 
 def ensure_db() -> None:
@@ -201,6 +415,12 @@ def ensure_db() -> None:
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    if DB_BACKEND == "postgres":
+        row = conn.execute(
+            "SELECT to_regclass(?) as name",
+            (table,),
+        ).fetchone()
+        return row is not None and row["name"] is not None
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
         (table,),
@@ -209,22 +429,75 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    if DB_BACKEND == "postgres":
+        rows = conn.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = ? AND column_name = ?
+            """,
+            (table, column),
+        ).fetchall()
+        return len(rows) > 0
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row["name"] == column for row in rows)
 
 
 def migrate_db() -> None:
     with get_conn() as conn:
+        if DB_BACKEND == "postgres":
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS invites (
+                    id SERIAL PRIMARY KEY,
+                    inviter_user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_by_user_id INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            return
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
             """
         )
+
+        if not column_exists(conn, "users", "email"):
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                """
+                UPDATE users
+                SET email = username
+                WHERE email = '' AND username LIKE '%@%'
+                """
+            )
 
         if table_exists(conn, "settings") and not column_exists(conn, "settings", "user_id"):
             conn.execute("ALTER TABLE settings RENAME TO settings_old")
@@ -309,6 +582,21 @@ def migrate_db() -> None:
                     expires_at TEXT NOT NULL,
                     used_by_user_id INTEGER,
                     FOREIGN KEY (inviter_user_id) REFERENCES users (id)
+                )
+                """
+            )
+
+        if not table_exists(conn, "password_resets"):
+            conn.execute(
+                """
+                CREATE TABLE password_resets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
                 )
                 """
             )
@@ -416,25 +704,25 @@ def get_overview_stats(user_id: int) -> dict[str, int]:
     }
     with get_conn() as conn:
         stats["plans"] = conn.execute(
-            "SELECT COUNT(*) FROM plans WHERE user_id = ?",
+            "SELECT COUNT(*) as count FROM plans WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone()["count"]
         stats["checklist"] = conn.execute(
-            "SELECT COUNT(*) FROM checklist_items WHERE user_id = ?",
+            "SELECT COUNT(*) as count FROM checklist_items WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone()["count"]
         stats["habits"] = conn.execute(
-            "SELECT COUNT(*) FROM habits WHERE user_id = ?",
+            "SELECT COUNT(*) as count FROM habits WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone()["count"]
         stats["routines"] = conn.execute(
-            "SELECT COUNT(*) FROM routines WHERE user_id = ?",
+            "SELECT COUNT(*) as count FROM routines WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone()["count"]
         stats["spending_entries"] = conn.execute(
-            "SELECT COUNT(*) FROM spending_entries WHERE user_id = ?",
+            "SELECT COUNT(*) as count FROM spending_entries WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone()["count"]
     return stats
 
 
@@ -725,11 +1013,12 @@ def register():
     invite_token = session.get("invite_token")
     if request.method == "POST":
         username = request.form.get("username", "").strip().lower()
+        email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         confirm = request.form.get("confirm", "")
 
-        if not username or not password:
-            error = "Username and password are required."
+        if not username or not email or not password:
+            error = "Username, email, and password are required."
         elif password != confirm:
             error = "Passwords do not match."
         else:
@@ -749,15 +1038,29 @@ def register():
 
             now = datetime.now().isoformat(timespec="seconds")
             with get_conn() as conn:
-                user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                user_count = conn.execute(
+                    "SELECT COUNT(*) as count FROM users"
+                ).fetchone()["count"]
+                email_exists = conn.execute(
+                    "SELECT 1 FROM users WHERE email = ?",
+                    (email,),
+                ).fetchone()
+                if email_exists:
+                    error = "That email is already registered."
+                    return render_template(
+                        "register.html",
+                        error=error,
+                        now=datetime.now(),
+                        invite=invite_token,
+                    )
                 try:
                     if user_count == 0:
                         conn.execute(
                             """
-                            INSERT INTO users (id, username, password_hash, created_at)
-                            VALUES (1, ?, ?, ?)
+                            INSERT INTO users (id, username, email, password_hash, created_at)
+                            VALUES (1, ?, ?, ?, ?)
                             """,
-                            (username, generate_password_hash(password), now),
+                            (username, email, generate_password_hash(password), now),
                         )
                         user_id = 1
                         conn.execute(
@@ -796,15 +1099,15 @@ def register():
                     else:
                         conn.execute(
                             """
-                            INSERT INTO users (username, password_hash, created_at)
-                            VALUES (?, ?, ?)
+                            INSERT INTO users (username, email, password_hash, created_at)
+                            VALUES (?, ?, ?, ?)
                             """,
-                            (username, generate_password_hash(password), now),
+                            (username, email, generate_password_hash(password), now),
                         )
                         user_id = conn.execute(
-                            "SELECT id FROM users WHERE username = ?",
+                            "SELECT id as id FROM users WHERE username = ?",
                             (username,),
-                        ).fetchone()[0]
+                        ).fetchone()["id"]
 
                     if invite_token:
                         conn.execute(
@@ -822,7 +1125,12 @@ def register():
                     session["user_id"] = user_id
                     return redirect(url_for("index"))
 
-    return render_template("register.html", error=error, now=datetime.now(), invite=invite_token)
+    return render_template(
+        "register.html",
+        error=error,
+        now=datetime.now(),
+        invite=invite_token,
+    )
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -838,8 +1146,8 @@ def login():
 
         with get_conn() as conn:
             user = conn.execute(
-                "SELECT * FROM users WHERE username = ?",
-                (username,),
+                "SELECT * FROM users WHERE username = ? OR email = ?",
+                (username, username),
             ).fetchone()
 
         if user is None or not check_password_hash(user["password_hash"], password):
@@ -858,6 +1166,158 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account():
+    ensure_db()
+    user_id = g.user["id"]
+    message = ""
+    error = ""
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        with get_conn() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+
+            if email and email != user["email"]:
+                email_exists = conn.execute(
+                    "SELECT 1 FROM users WHERE email = ? AND id != ?",
+                    (email, user_id),
+                ).fetchone()
+                if email_exists:
+                    error = "That email is already registered."
+                else:
+                    conn.execute(
+                        "UPDATE users SET email = ? WHERE id = ?",
+                        (email, user_id),
+                    )
+                    message = "Email updated."
+
+            if new_password:
+                if not current_password or not check_password_hash(
+                    user["password_hash"], current_password
+                ):
+                    error = "Current password is incorrect."
+                elif new_password != confirm_password:
+                    error = "New passwords do not match."
+                else:
+                    conn.execute(
+                        "UPDATE users SET password_hash = ? WHERE id = ?",
+                        (generate_password_hash(new_password), user_id),
+                    )
+                    message = "Password updated."
+
+    with get_conn() as conn:
+        user = conn.execute(
+            "SELECT username, email FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+
+    return render_template(
+        "account.html",
+        now=datetime.now(),
+        user=user,
+        message=message,
+        error=error,
+    )
+
+
+@app.route("/password-reset", methods=["GET", "POST"])
+def password_reset_request():
+    ensure_db()
+    message = ""
+    error = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not email:
+            error = "Enter your email address."
+        else:
+            with get_conn() as conn:
+                user = conn.execute(
+                    "SELECT id, email FROM users WHERE email = ?",
+                    (email,),
+                ).fetchone()
+            if user is None:
+                message = "If that email exists, a reset link has been sent."
+            else:
+                if not user["email"]:
+                    error = "No email is saved on that account."
+                else:
+                    token = secrets.token_urlsafe(24)
+                    now = datetime.now()
+                    expires_at = (now + timedelta(hours=2)).isoformat(timespec="seconds")
+                    with get_conn() as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO password_resets (user_id, token, created_at, expires_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (user["id"], token, now.isoformat(timespec="seconds"), expires_at),
+                        )
+                    base_url = os.environ.get("APP_BASE_URL", "").strip()
+                    if not base_url:
+                        base_url = request.host_url.rstrip("/")
+                    sent = send_reset_email(user["email"], token, base_url)
+                    if sent:
+                        message = "Reset link sent. Check your email."
+                    else:
+                        error = "Email service is not configured."
+
+    return render_template(
+        "password_reset_request.html",
+        now=datetime.now(),
+        message=message,
+        error=error,
+    )
+
+
+@app.route("/password-reset/<token>", methods=["GET", "POST"])
+def password_reset(token: str):
+    ensure_db()
+    error = ""
+    with get_conn() as conn:
+        reset = conn.execute(
+            """
+            SELECT * FROM password_resets
+            WHERE token = ? AND used = 0 AND expires_at >= ?
+            """,
+            (token, datetime.now().isoformat(timespec="seconds")),
+        ).fetchone()
+    if reset is None:
+        return render_template("password_reset_invalid.html", now=datetime.now())
+
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+        if not password:
+            error = "Password is required."
+        elif password != confirm:
+            error = "Passwords do not match."
+        else:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (generate_password_hash(password), reset["user_id"]),
+                )
+                conn.execute(
+                    "UPDATE password_resets SET used = 1 WHERE id = ?",
+                    (reset["id"],),
+                )
+            return redirect(url_for("login"))
+
+    return render_template(
+        "password_reset_form.html",
+        now=datetime.now(),
+        token=token,
+        error=error,
+    )
 @app.route("/invite/<token>", methods=["GET"])
 def accept_invite(token: str):
     ensure_db()

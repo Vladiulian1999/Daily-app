@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-12 col-lg-7">
+      <div class="card shadow-sm border-0">
+        <div class="card-body p-4">
+          <h4 class="mb-2">Account settings</h4>
+          <p class="text-muted">Update your email or change your password.</p>
+          {% if error %}
+            <div class="alert alert-danger py-2">{{ error }}</div>
+          {% endif %}
+          {% if message %}
+            <div class="alert alert-success py-2">{{ message }}</div>
+          {% endif %}
+          <form method="post" action="{{ url_for('account') }}" class="vstack gap-3">
+            <div>
+              <label class="form-label">Email</label>
+              <input class="form-control" type="email" name="email" value="{{ user['email'] }}">
+            </div>
+            <div class="border-top pt-3">
+              <label class="form-label">Change password</label>
+              <input class="form-control mb-2" type="password" name="current_password" placeholder="Current password">
+              <input class="form-control mb-2" type="password" name="new_password" placeholder="New password">
+              <input class="form-control" type="password" name="confirm_password" placeholder="Confirm new password">
+            </div>
+            <button class="btn btn-outline-primary">Save changes</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
