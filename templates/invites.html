@@ -3,50 +3,42 @@
 {% block content %}
   <div class="row justify-content-center">
     <div class="col-12 col-lg-8">
-      <div class="card shadow-sm border-0 mb-4">
-        <div class="card-body p-4">
-          <h4 class="mb-2">Invite a friend</h4>
-          <p class="text-muted">Create a private invite link. It expires in 7 days.</p>
-          <form method="post" action="{{ url_for('create_invite') }}">
-            <button class="btn btn-primary">Generate invite link</button>
-          </form>
+      <div class="section-card">
+        <h2 class="section-title">Invite a friend</h2>
+        <p class="section-subtitle">Create a private invite link. It expires in 7 days.</p>
+        <form method="post" action="{{ url_for('create_invite') }}">
+          <button class="btn btn-primary">Generate invite link</button>
+        </form>
+      </div>
+
+      <div class="section-card mt-4">
+        <h2 class="section-title">Active invites</h2>
+        <div class="list-stack">
+          {% for invite in active_invites %}
+            <div class="list-item">
+              <div>
+                <div class="item-title">Valid until {{ invite["expires_at"] }}</div>
+                <div class="item-meta">{{ request.host_url }}invite/{{ invite["token"] }}</div>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm" onclick="navigator.clipboard.writeText('{{ request.host_url }}invite/{{ invite['token'] }}')">Copy link</button>
+            </div>
+          {% else %}
+            <p class="empty-state">No active invites.</p>
+          {% endfor %}
         </div>
       </div>
 
-      <div class="card shadow-sm border-0 mb-4">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Active invites</h5>
-          <div class="vstack gap-2">
-            {% for invite in active_invites %}
-              <div class="d-flex flex-column flex-md-row justify-content-between gap-2">
-                <div>
-                  <div class="fw-semibold">Valid until {{ invite["expires_at"] }}</div>
-                  <div class="small text-muted">
-                    {{ request.host_url }}invite/{{ invite["token"] }}
-                  </div>
-                </div>
-                <button class="btn btn-outline-secondary btn-sm" onclick="navigator.clipboard.writeText('{{ request.host_url }}invite/{{ invite['token'] }}')">Copy link</button>
-              </div>
-            {% else %}
-              <span class="text-muted">No active invites.</span>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-
-      <div class="card shadow-sm border-0">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Used invites</h5>
-          <div class="vstack gap-2">
-            {% for invite in used_invites %}
-              <div class="d-flex justify-content-between">
-                <span>{{ invite["used_by"] or "User" }}</span>
-                <span class="small text-muted">Created {{ invite["created_at"] }}</span>
-              </div>
-            {% else %}
-              <span class="text-muted">No invites used yet.</span>
-            {% endfor %}
-          </div>
+      <div class="section-card mt-4">
+        <h2 class="section-title">Used invites</h2>
+        <div class="list-stack">
+          {% for invite in used_invites %}
+            <div class="list-item">
+              <span>{{ invite["used_by"] or "User" }}</span>
+              <span class="item-meta">Created {{ invite["created_at"] }}</span>
+            </div>
+          {% else %}
+            <p class="empty-state">No invites used yet.</p>
+          {% endfor %}
         </div>
       </div>
     </div>

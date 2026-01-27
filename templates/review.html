@@ -1,105 +1,87 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <div class="section-title mb-4">
-    <h3 class="mb-0">Weekly Review</h3>
-    <span class="text-muted">Summary from {{ start_date }} to {{ end_date }}.</span>
-  </div>
+  <section class="hero-card">
+    <div>
+      <p class="eyebrow">Weekly review</p>
+      <h1 class="hero-title">Your week at a glance</h1>
+      <p class="hero-subtitle">Summary from {{ start_date }} to {{ end_date }}.</p>
+    </div>
+  </section>
 
-  <div class="row g-4">
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm border-0 h-100">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Planning Outcomes</h5>
-          <div class="d-flex justify-content-between">
-            <span>Done</span>
-            <span class="fw-semibold">{{ plan_stat_map.get("done", 0) }}</span>
-          </div>
-          <div class="d-flex justify-content-between">
-            <span>Pending</span>
-            <span class="fw-semibold">{{ plan_stat_map.get("pending", 0) }}</span>
-          </div>
-          <div class="d-flex justify-content-between">
-            <span>Missed</span>
-            <span class="fw-semibold text-danger">{{ plan_stat_map.get("missed", 0) }}</span>
-          </div>
-          <div class="mt-3 text-muted small">
-            Use this to adjust next week's plan size.
-          </div>
+  <section class="section-grid">
+    <div class="section-card">
+      <h2 class="section-title">Planning outcomes</h2>
+      <div class="list-stack">
+        <div class="list-item">
+          <span>Done</span>
+          <strong>{{ plan_stat_map.get("done", 0) }}</strong>
+        </div>
+        <div class="list-item">
+          <span>Pending</span>
+          <strong>{{ plan_stat_map.get("pending", 0) }}</strong>
+        </div>
+        <div class="list-item">
+          <span>Missed</span>
+          <strong class="text-danger">{{ plan_stat_map.get("missed", 0) }}</strong>
         </div>
       </div>
     </div>
 
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm border-0 h-100">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Spending By Day</h5>
-          <div class="vstack gap-2">
-            {% for day in spending_by_day %}
-              <div class="d-flex justify-content-between">
-                <span>{{ day["spend_date"] }}</span>
-                <span class="fw-semibold">£{{ "%.2f"|format(day["total"]) }}</span>
-              </div>
-            {% else %}
-              <span class="text-muted">No spending logged this week.</span>
-            {% endfor %}
+    <div class="section-card">
+      <h2 class="section-title">Spending by day</h2>
+      <div class="list-stack">
+        {% for day in spending_by_day %}
+          <div class="list-item">
+            <span>{{ day["spend_date"] }}</span>
+            <strong>£{{ "%.2f"|format(day["total"]) }}</strong>
           </div>
-        </div>
+        {% else %}
+          <p class="empty-state">No spending logged this week.</p>
+        {% endfor %}
       </div>
     </div>
 
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm border-0 h-100">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Spending By Category</h5>
-          <div class="vstack gap-2">
-            {% for item in spending_by_category %}
-              <div class="d-flex justify-content-between">
-                <span>{{ item["category"] }}</span>
-                <span class="fw-semibold">£{{ "%.2f"|format(item["total"]) }}</span>
-              </div>
-            {% else %}
-              <span class="text-muted">No category totals yet.</span>
-            {% endfor %}
+    <div class="section-card">
+      <h2 class="section-title">Spending by category</h2>
+      <div class="list-stack">
+        {% for item in spending_by_category %}
+          <div class="list-item">
+            <span>{{ item["category"] }}</span>
+            <strong>£{{ "%.2f"|format(item["total"]) }}</strong>
           </div>
-        </div>
+        {% else %}
+          <p class="empty-state">No category totals yet.</p>
+        {% endfor %}
       </div>
     </div>
 
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm border-0 h-100">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Habits Logged</h5>
-          <div class="vstack gap-2">
-            {% for habit in habit_counts %}
-              <div class="d-flex justify-content-between">
-                <span>{{ habit["name"] }}</span>
-                <span class="fw-semibold">{{ habit["total"] or 0 }}</span>
-              </div>
-            {% else %}
-              <span class="text-muted">No habit logs yet.</span>
-            {% endfor %}
+    <div class="section-card">
+      <h2 class="section-title">Habits logged</h2>
+      <div class="list-stack">
+        {% for habit in habit_counts %}
+          <div class="list-item">
+            <span>{{ habit["name"] }}</span>
+            <strong>{{ habit["total"] or 0 }}</strong>
           </div>
-        </div>
+        {% else %}
+          <p class="empty-state">No habit logs yet.</p>
+        {% endfor %}
       </div>
     </div>
 
-    <div class="col-12">
-      <div class="card shadow-sm border-0">
-        <div class="card-body p-4">
-          <h5 class="mb-3">Routine Completions</h5>
-          <div class="vstack gap-2">
-            {% for routine in routine_completions %}
-              <div class="d-flex justify-content-between">
-                <span>{{ routine["name"] }}</span>
-                <span class="fw-semibold">{{ routine["total"] or 0 }}</span>
-              </div>
-            {% else %}
-              <span class="text-muted">No routine logs yet.</span>
-            {% endfor %}
+    <div class="section-card">
+      <h2 class="section-title">Routine completions</h2>
+      <div class="list-stack">
+        {% for routine in routine_completions %}
+          <div class="list-item">
+            <span>{{ routine["name"] }}</span>
+            <strong>{{ routine["total"] or 0 }}</strong>
           </div>
-        </div>
+        {% else %}
+          <p class="empty-state">No routine logs yet.</p>
+        {% endfor %}
       </div>
     </div>
-  </div>
+  </section>
 {% endblock %}

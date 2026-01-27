@@ -414,7 +414,7 @@ def ensure_db() -> None:
         _db_ready = True
 
 
-def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+def table_exists(conn: DBConn, table: str) -> bool:
     if DB_BACKEND == "postgres":
         row = conn.execute(
             "SELECT to_regclass(?) as name",
@@ -428,7 +428,7 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+def column_exists(conn: DBConn, table: str, column: str) -> bool:
     if DB_BACKEND == "postgres":
         rows = conn.execute(
             """
