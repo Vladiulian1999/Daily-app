@@ -27,30 +27,35 @@
     </div>
   </section>
 
-  <nav class="section-nav">
-    <a href="#plan-checklist" class="section-link">Plan + Checklist</a>
-    <a href="#spending-habits" class="section-link">Spending + Habits</a>
-    <a href="#routines-reflection" class="section-link">Routines + Reflection</a>
-  </nav>
+  <section class="intro-card">
+    <div>
+      <p class="eyebrow">Daily focus</p>
+      <h2 class="section-heading">Open one section at a time</h2>
+      <p class="section-note">Pick the area you want to work on and stay focused without scrolling past everything else.</p>
+    </div>
+  </section>
 
-  <section id="plan-checklist" class="page-section">
-    <header class="section-header">
-      <div>
-        <p class="section-kicker">Focus area</p>
-        <h2 class="section-heading">Plan your day</h2>
-      </div>
-      <div class="section-controls">
-        <p class="section-note">Keep your priorities and quick wins together for the next {{ reset_cycle_days }} days.</p>
-        <form method="post" action="{{ url_for('update_reset_cycle') }}" class="cycle-form">
-          <label class="cycle-label">Reset cycle (days)</label>
-          <div class="cycle-inputs">
-            <input class="form-control" name="reset_cycle_days" value="{{ reset_cycle_days }}" inputmode="numeric" pattern="[0-9]*">
-            <button class="btn btn-outline-primary">Save</button>
-          </div>
-        </form>
-      </div>
-    </header>
-    <div class="section-grid">
+  <div class="accordion-stack">
+    <details id="plan-checklist" class="accordion-section" open>
+      <summary class="accordion-summary">
+        <div>
+          <p class="section-kicker">Section</p>
+          <h2 class="section-heading">Plan your day</h2>
+          <p class="section-note">Keep your priorities and quick wins together for the next {{ reset_cycle_days }} days.</p>
+        </div>
+        <span class="accordion-pill">Open</span>
+      </summary>
+      <div class="accordion-body">
+        <div class="section-controls">
+          <form method="post" action="{{ url_for('update_reset_cycle') }}" class="cycle-form">
+            <label class="cycle-label">Reset cycle (days)</label>
+            <div class="cycle-inputs">
+              <input class="form-control" name="reset_cycle_days" value="{{ reset_cycle_days }}" inputmode="numeric" pattern="[0-9]*">
+              <button class="btn btn-outline-primary">Save</button>
+            </div>
+          </form>
+        </div>
+        <div class="section-grid">
       <div class="section-card">
       <h2 class="section-title">Daily plan</h2>
       <p class="section-subtitle">Add your top priorities for today.</p>
@@ -138,19 +143,21 @@
           <p class="empty-state">No checklist items yet.</p>
         {% endfor %}
       </div>
-    </div>
-    </div>
-  </section>
-
-  <section id="spending-habits" class="page-section">
-    <header class="section-header">
-      <div>
-        <p class="section-kicker">Focus area</p>
-        <h2 class="section-heading">Energy & money</h2>
+        </div>
       </div>
-      <p class="section-note">Log today, review the week, and keep your streaks alive.</p>
-    </header>
-    <div class="section-grid">
+    </details>
+
+    <details id="spending-habits" class="accordion-section">
+      <summary class="accordion-summary">
+        <div>
+          <p class="section-kicker">Section</p>
+          <h2 class="section-heading">Energy & money</h2>
+          <p class="section-note">Log today, review the week, and keep your streaks alive.</p>
+        </div>
+        <span class="accordion-pill">Open</span>
+      </summary>
+      <div class="accordion-body">
+        <div class="section-grid">
       <div class="section-card">
       <h2 class="section-title">Spending</h2>
       <p class="section-subtitle">Track today and stay within your limits.</p>
@@ -176,6 +183,10 @@
         <div>
           <span>Cycle total</span>
           <strong>£{{ "%.2f"|format(spend_total) }}</strong>
+        <div>
+          <span>Today total</span>
+          <strong>£{{ "%.2f"|format(spend_total_today) }}</strong>
+        </div>
         </div>
         {% if daily_spend_limit and daily_spend_limit > 0 %}
           <div>
@@ -192,7 +203,7 @@
           <div class="list-item">
             <div>
               <div class="item-title">£{{ "%.2f"|format(entry["amount"]) }}</div>
-              <div class="item-meta">{{ entry["spend_date"] }} ? {{ entry["category"] }} - {{ entry["note"] }}</div>
+              <div class="item-meta">{{ entry["spend_date"] }} · {{ entry["category"] }} - {{ entry["note"] }}</div>
             </div>
             <form method="post" action="{{ url_for('delete_spending', entry_id=entry['id']) }}">
               <button class="btn btn-outline-danger btn-sm">Remove</button>
@@ -315,19 +326,21 @@
         <input class="form-control" name="target_count" value="1">
         <button class="btn btn-outline-primary">Add habit</button>
       </form>
-    </div>
-    </div>
-  </section>
-
-  <section id="routines-reflection" class="page-section">
-    <header class="section-header">
-      <div>
-        <p class="section-kicker">Focus area</p>
-        <h2 class="section-heading">Routines & reflection</h2>
+        </div>
       </div>
-      <p class="section-note">Structure your day, then close it out with a quick check-in.</p>
-    </header>
-    <div class="section-grid">
+    </details>
+
+    <details id="routines-reflection" class="accordion-section">
+      <summary class="accordion-summary">
+        <div>
+          <p class="section-kicker">Section</p>
+          <h2 class="section-heading">Routines & reflection</h2>
+          <p class="section-note">Structure your day, then close it out with a quick check-in.</p>
+        </div>
+        <span class="accordion-pill">Open</span>
+      </summary>
+      <div class="accordion-body">
+        <div class="section-grid">
       <div class="section-card">
       <h2 class="section-title">Routines</h2>
       <p class="section-subtitle">Morning, afternoon, and evening steps.</p>
@@ -412,7 +425,26 @@
           <p class="empty-state">No reflections yet.</p>
         {% endfor %}
       </div>
-    </div>
-    </div>
-  </section>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const sections = Array.from(document.querySelectorAll(".accordion-section"));
+      sections.forEach((section) => {
+        section.addEventListener("toggle", () => {
+          if (!section.open) {
+            return;
+          }
+          sections.forEach((other) => {
+            if (other !== section) {
+              other.removeAttribute("open");
+            }
+          });
+        });
+      });
+    });
+  </script>
 {% endblock %}
