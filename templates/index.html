@@ -27,8 +27,31 @@
     </div>
   </section>
 
-  <section class="section-grid">
-    <div class="section-card">
+  <nav class="section-nav">
+    <a href="#plan-checklist" class="section-link">Plan + Checklist</a>
+    <a href="#spending-habits" class="section-link">Spending + Habits</a>
+    <a href="#routines-reflection" class="section-link">Routines + Reflection</a>
+  </nav>
+
+  <section id="plan-checklist" class="page-section">
+    <header class="section-header">
+      <div>
+        <p class="section-kicker">Focus area</p>
+        <h2 class="section-heading">Plan your day</h2>
+      </div>
+      <div class="section-controls">
+        <p class="section-note">Keep your priorities and quick wins together for the next {{ reset_cycle_days }} days.</p>
+        <form method="post" action="{{ url_for('update_reset_cycle') }}" class="cycle-form">
+          <label class="cycle-label">Reset cycle (days)</label>
+          <div class="cycle-inputs">
+            <input class="form-control" name="reset_cycle_days" value="{{ reset_cycle_days }}" inputmode="numeric" pattern="[0-9]*">
+            <button class="btn btn-outline-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </header>
+    <div class="section-grid">
+      <div class="section-card">
       <h2 class="section-title">Daily plan</h2>
       <p class="section-subtitle">Add your top priorities for today.</p>
       <form method="post" action="{{ url_for('add_plan') }}" class="stack">
@@ -50,8 +73,9 @@
             <div>
               <div class="item-title">{{ plan["title"] }}</div>
               <div class="item-meta">
+                {{ plan["scheduled_date"] }} ·
                 {{ plan["time_block"] if plan["time_block"] else "Flexible time" }}
-                - Priority {{ plan["priority"] }}
+                · Priority {{ plan["priority"] }}
               </div>
             </div>
             <div class="item-actions">
@@ -82,7 +106,7 @@
       </div>
     </div>
 
-    <div class="section-card">
+      <div class="section-card">
       <h2 class="section-title">Checklist</h2>
       <p class="section-subtitle">Small wins that keep the day steady.</p>
       <form method="post" action="{{ url_for('add_checklist_item') }}" class="stack">
@@ -95,7 +119,10 @@
       <div class="list-stack">
         {% for item in checklist %}
           <div class="list-item">
-            <div class="item-title {{ 'text-line' if item['done'] else '' }}">{{ item["label"] }}</div>
+            <div>
+              <div class="item-title {{ 'text-line' if item['done'] else '' }}">{{ item["label"] }}</div>
+              <div class="item-meta">{{ item["scheduled_date"] }}</div>
+            </div>
             <div class="item-actions">
               <form method="post" action="{{ url_for('toggle_checklist_item', item_id=item['id']) }}">
                 <button class="btn btn-sm {{ 'btn-success' if item['done'] else 'btn-outline-secondary' }}">
@@ -112,10 +139,19 @@
         {% endfor %}
       </div>
     </div>
+    </div>
   </section>
 
-  <section class="section-grid">
-    <div class="section-card">
+  <section id="spending-habits" class="page-section">
+    <header class="section-header">
+      <div>
+        <p class="section-kicker">Focus area</p>
+        <h2 class="section-heading">Energy & money</h2>
+      </div>
+      <p class="section-note">Log today, review the week, and keep your streaks alive.</p>
+    </header>
+    <div class="section-grid">
+      <div class="section-card">
       <h2 class="section-title">Spending</h2>
       <p class="section-subtitle">Track today and stay within your limits.</p>
       <form method="post" action="{{ url_for('add_spending') }}" class="stack">
@@ -138,7 +174,7 @@
       </form>
       <div class="summary-box">
         <div>
-          <span>Today total</span>
+          <span>Cycle total</span>
           <strong>£{{ "%.2f"|format(spend_total) }}</strong>
         </div>
         {% if daily_spend_limit and daily_spend_limit > 0 %}
@@ -156,14 +192,14 @@
           <div class="list-item">
             <div>
               <div class="item-title">£{{ "%.2f"|format(entry["amount"]) }}</div>
-              <div class="item-meta">{{ entry["category"] }} - {{ entry["note"] }}</div>
+              <div class="item-meta">{{ entry["spend_date"] }} ? {{ entry["category"] }} - {{ entry["note"] }}</div>
             </div>
             <form method="post" action="{{ url_for('delete_spending', entry_id=entry['id']) }}">
               <button class="btn btn-outline-danger btn-sm">Remove</button>
             </form>
           </div>
         {% else %}
-          <p class="empty-state">No spending logged today.</p>
+          <p class="empty-state">No spending logged yet.</p>
         {% endfor %}
       </div>
 
@@ -236,7 +272,7 @@
       </div>
     </div>
 
-    <div class="section-card">
+      <div class="section-card">
       <h2 class="section-title">Habits</h2>
       <p class="section-subtitle">Keep your streaks alive.</p>
       <div class="list-stack">
@@ -280,10 +316,19 @@
         <button class="btn btn-outline-primary">Add habit</button>
       </form>
     </div>
+    </div>
   </section>
 
-  <section class="section-grid">
-    <div class="section-card">
+  <section id="routines-reflection" class="page-section">
+    <header class="section-header">
+      <div>
+        <p class="section-kicker">Focus area</p>
+        <h2 class="section-heading">Routines & reflection</h2>
+      </div>
+      <p class="section-note">Structure your day, then close it out with a quick check-in.</p>
+    </header>
+    <div class="section-grid">
+      <div class="section-card">
       <h2 class="section-title">Routines</h2>
       <p class="section-subtitle">Morning, afternoon, and evening steps.</p>
       <div class="list-stack">
@@ -335,7 +380,7 @@
       </form>
     </div>
 
-    <div class="section-card">
+      <div class="section-card">
       <h2 class="section-title">Daily reflection</h2>
       <p class="section-subtitle">Close the day with clarity.</p>
       <form method="post" action="{{ url_for('save_reflection') }}" class="stack">
@@ -346,6 +391,28 @@
         <input class="form-control" name="gratitude" placeholder="Gratitude" value="{{ reflection['gratitude'] if reflection else '' }}">
         <button class="btn btn-primary">Save reflection</button>
       </form>
+      <div class="list-stack">
+        {% for item in reflections %}
+          <div class="list-item">
+            <div>
+              <div class="item-title">{{ item["log_date"] }}</div>
+              <div class="item-meta">Mood: {{ item["mood"] }}</div>
+              {% if item["wins"] %}
+                <div class="item-meta">Wins: {{ item["wins"] }}</div>
+              {% endif %}
+              {% if item["blockers"] %}
+                <div class="item-meta">Blockers: {{ item["blockers"] }}</div>
+              {% endif %}
+              {% if item["gratitude"] %}
+                <div class="item-meta">Gratitude: {{ item["gratitude"] }}</div>
+              {% endif %}
+            </div>
+          </div>
+        {% else %}
+          <p class="empty-state">No reflections yet.</p>
+        {% endfor %}
+      </div>
+    </div>
     </div>
   </section>
 {% endblock %}

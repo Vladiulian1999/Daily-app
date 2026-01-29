@@ -18,6 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "tasks.db"
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_BACKEND = "postgres" if DATABASE_URL else "sqlite"
+RESET_CYCLE_DAYS_DEFAULT = 90
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
@@ -256,7 +257,8 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS settings (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL UNIQUE,
-                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                    daily_spend_limit REAL NOT NULL DEFAULT 0,
+                    reset_cycle_days INTEGER NOT NULL DEFAULT 90
                 );
 
                 CREATE TABLE IF NOT EXISTS daily_reflections (
@@ -389,7 +391,8 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL UNIQUE,
-                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                    daily_spend_limit REAL NOT NULL DEFAULT 0,
+                    reset_cycle_days INTEGER NOT NULL DEFAULT 90
                 );
 
                 CREATE TABLE IF NOT EXISTS daily_reflections (
@@ -473,8 +476,21 @@ def migrate_db() -> None:
                     expires_at TEXT NOT NULL,
                     used INTEGER NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    daily_spend_limit REAL NOT NULL DEFAULT 0,
+                    reset_cycle_days INTEGER NOT NULL DEFAULT 90
+                );
                 """
             )
+            if table_exists(conn, "settings") and not column_exists(
+                conn, "settings", "reset_cycle_days"
+            ):
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN reset_cycle_days INTEGER NOT NULL DEFAULT 90"
+                )
             return
 
         conn.execute(
@@ -506,17 +522,25 @@ def migrate_db() -> None:
                 CREATE TABLE settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL UNIQUE,
-                    daily_spend_limit REAL NOT NULL DEFAULT 0
+                    daily_spend_limit REAL NOT NULL DEFAULT 0,
+                    reset_cycle_days INTEGER NOT NULL DEFAULT 90
                 )
                 """
             )
             conn.execute(
                 """
-                INSERT INTO settings (user_id, daily_spend_limit)
-                SELECT 1, daily_spend_limit FROM settings_old
+                INSERT INTO settings (user_id, daily_spend_limit, reset_cycle_days)
+                SELECT 1, daily_spend_limit, 90 FROM settings_old
                 """
             )
             conn.execute("DROP TABLE settings_old")
+
+        if table_exists(conn, "settings") and not column_exists(
+            conn, "settings", "reset_cycle_days"
+        ):
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN reset_cycle_days INTEGER NOT NULL DEFAULT 90"
+            )
 
         if table_exists(conn, "daily_reflections") and not column_exists(
             conn, "daily_reflections", "user_id"
@@ -623,6 +647,18 @@ def today_str() -> str:
     return date.today().strftime("%Y-%m-%d")
 
 
+def normalize_cycle_days(value: int | str | None) -> int:
+    try:
+        days = int(value) if value is not None else RESET_CYCLE_DAYS_DEFAULT
+    except (TypeError, ValueError):
+        days = RESET_CYCLE_DAYS_DEFAULT
+    return max(7, min(days, 365))
+
+
+def cycle_start_str(cycle_days: int) -> str:
+    return (date.today() - timedelta(days=cycle_days - 1)).strftime("%Y-%m-%d")
+
+
 def parse_int(value: str, default: int) -> int:
     try:
         return int(value)
@@ -645,8 +681,11 @@ def get_settings(user_id: int) -> sqlite3.Row:
         ).fetchone()
         if settings is None:
             conn.execute(
-                "INSERT INTO settings (user_id, daily_spend_limit) VALUES (?, 0)",
-                (user_id,),
+                """
+                INSERT INTO settings (user_id, daily_spend_limit, reset_cycle_days)
+                VALUES (?, 0, ?)
+                """,
+                (user_id, RESET_CYCLE_DAYS_DEFAULT),
             )
             settings = conn.execute(
                 "SELECT * FROM settings WHERE user_id = ?",
@@ -656,7 +695,7 @@ def get_settings(user_id: int) -> sqlite3.Row:
 
 
 def compute_habit_streaks(
-    habits: list[sqlite3.Row], habit_log_rows: list[sqlite3.Row]
+    habits: list[sqlite3.Row], habit_log_rows: list[sqlite3.Row], max_days: int
 ) -> dict[int, int]:
     today = date.today()
     log_map: dict[int, dict[date, int]] = {}
@@ -670,7 +709,7 @@ def compute_habit_streaks(
         habit_id = habit["id"]
         target = habit["target_count"]
         streak = 0
-        for offset in range(0, 366):
+        for offset in range(0, max_days):
             check_date = today - timedelta(days=offset)
             count = log_map.get(habit_id, {}).get(check_date, 0)
             if count >= target and target > 0:
@@ -733,25 +772,27 @@ def index():
     user_id = g.user["id"]
     update_missed_plans(user_id)
     today_iso = today_str()
+    settings = get_settings(user_id)
+    reset_cycle_days = normalize_cycle_days(settings["reset_cycle_days"])
+    cycle_start = cycle_start_str(reset_cycle_days)
     week_start = (date.today() - timedelta(days=6)).strftime("%Y-%m-%d")
-    year_start = (date.today() - timedelta(days=365)).strftime("%Y-%m-%d")
 
     with get_conn() as conn:
         plans = conn.execute(
             """
             SELECT * FROM plans
-            WHERE scheduled_date = ? AND user_id = ?
-            ORDER BY priority DESC, id ASC
+            WHERE scheduled_date BETWEEN ? AND ? AND user_id = ?
+            ORDER BY scheduled_date DESC, priority DESC, id ASC
             """,
-            (today_iso, user_id),
+            (cycle_start, today_iso, user_id),
         ).fetchall()
         checklist = conn.execute(
             """
             SELECT * FROM checklist_items
-            WHERE scheduled_date = ? AND user_id = ?
-            ORDER BY id ASC
+            WHERE scheduled_date BETWEEN ? AND ? AND user_id = ?
+            ORDER BY scheduled_date DESC, id ASC
             """,
-            (today_iso, user_id),
+            (cycle_start, today_iso, user_id),
         ).fetchall()
         habits = conn.execute(
             "SELECT * FROM habits WHERE active = 1 AND user_id = ? ORDER BY id ASC",
@@ -770,7 +811,7 @@ def index():
             FROM habit_logs
             WHERE log_date BETWEEN ? AND ? AND user_id = ?
             """,
-            (year_start, today_iso, user_id),
+            (cycle_start, today_iso, user_id),
         ).fetchall()
         routines = conn.execute(
             """
@@ -799,10 +840,10 @@ def index():
         spending_entries = conn.execute(
             """
             SELECT * FROM spending_entries
-            WHERE spend_date = ? AND user_id = ?
-            ORDER BY created_at DESC
+            WHERE spend_date BETWEEN ? AND ? AND user_id = ?
+            ORDER BY spend_date DESC, created_at DESC
             """,
-            (today_iso, user_id),
+            (cycle_start, today_iso, user_id),
         ).fetchall()
         spending_budgets = conn.execute(
             "SELECT * FROM spending_budgets WHERE user_id = ? ORDER BY category",
@@ -830,16 +871,22 @@ def index():
             "SELECT * FROM daily_reflections WHERE log_date = ? AND user_id = ?",
             (today_iso, user_id),
         ).fetchone()
+        reflections = conn.execute(
+            """
+            SELECT * FROM daily_reflections
+            WHERE log_date BETWEEN ? AND ? AND user_id = ?
+            ORDER BY log_date DESC
+            """,
+            (cycle_start, today_iso, user_id),
+        ).fetchall()
 
     habit_log_map = {row["habit_id"]: row["count"] for row in habit_logs}
-    habit_streaks = compute_habit_streaks(habits, habit_logs_all)
+    habit_streaks = compute_habit_streaks(habits, habit_logs_all, reset_cycle_days)
     routine_log_map = {row["routine_item_id"]: row["done"] for row in routine_logs}
     spend_category_map = {row["category"]: row["total"] for row in spending_by_category}
     spend_week_category_map = {
         row["category"]: row["total"] for row in spending_by_category_week
     }
-    settings = get_settings(user_id)
-
     routine_map: dict[int, Routine] = {}
     for routine in routines:
         routine_map[routine["id"]] = {
@@ -862,9 +909,12 @@ def index():
         )
 
     spend_total = sum(entry["amount"] for entry in spending_entries)
+    spend_total_today = sum(
+        entry["amount"] for entry in spending_entries if entry["spend_date"] == today_iso
+    )
     daily_spend_limit = settings["daily_spend_limit"]
     left_to_spend = (
-        daily_spend_limit - spend_total if daily_spend_limit > 0 else None
+        daily_spend_limit - spend_total_today if daily_spend_limit > 0 else None
     )
     plans_done = sum(1 for plan in plans if plan["status"] == "done")
     plans_pending = sum(1 for plan in plans if plan["status"] == "pending")
@@ -894,12 +944,15 @@ def index():
         routines=list(routine_map.values()),
         spending_entries=spending_entries,
         spend_total=spend_total,
+        spend_total_today=spend_total_today,
         spending_budgets=spending_budgets,
         spend_category_map=spend_category_map,
         spend_week_category_map=spend_week_category_map,
         daily_spend_limit=daily_spend_limit,
         left_to_spend=left_to_spend,
         reflection=reflection,
+        reflections=reflections,
+        reset_cycle_days=reset_cycle_days,
         plans_done=plans_done,
         plans_pending=plans_pending,
         plans_missed=plans_missed,
@@ -1731,6 +1784,24 @@ def update_spend_limit():
             ON CONFLICT(user_id) DO UPDATE SET daily_spend_limit = excluded.daily_spend_limit
             """,
             (user_id, daily_limit),
+        )
+    return redirect(url_for("index"))
+
+
+@app.route("/settings/reset-cycle", methods=["POST"])
+@login_required
+def update_reset_cycle():
+    ensure_db()
+    user_id = g.user["id"]
+    cycle_days = normalize_cycle_days(request.form.get("reset_cycle_days", ""))
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (user_id, daily_spend_limit, reset_cycle_days)
+            VALUES (?, 0, ?)
+            ON CONFLICT(user_id) DO UPDATE SET reset_cycle_days = excluded.reset_cycle_days
+            """,
+            (user_id, cycle_days),
         )
     return redirect(url_for("index"))
 
